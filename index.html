@@ -1351,66 +1351,28 @@
       </div>
 
       <div class="p-4 space-y-3 overflow-y-auto flex-1">
-        <!-- Scanner Engine Selector & Action Bar -->
+        <!-- Local Spine Scanner Action Bar (Option 2) -->
         <div class="bg-slate-950/80 border border-slate-800 rounded-2xl p-3 space-y-2.5 shadow-inner">
           <div class="flex items-center justify-between flex-wrap gap-2 text-xs">
             <div class="flex items-center gap-1.5 font-bold text-slate-200">
               <i data-lucide="scan-line" class="w-4 h-4 text-purple-400"></i>
-              <span>Spine Scanner:</span>
+              <span>Local Spine Scanner (On-Device):</span>
             </div>
             
-            <!-- Engine Toggle -->
-            <div class="flex bg-slate-900 p-0.5 rounded-xl border border-slate-800 text-[11px] font-bold">
-              <button type="button" id="btnEngineAi" onclick="setBulkEngine('ai')" 
-                      class="px-2.5 py-1 rounded-lg transition bg-purple-600 text-white flex items-center gap-1">
-                <i data-lucide="sparkles" class="w-3 h-3 text-purple-200"></i>
-                <span>✨ AI Vision (99% Accurate)</span>
-              </button>
-              <button type="button" id="btnEngineLocal" onclick="setBulkEngine('local')" 
-                      class="px-2.5 py-1 rounded-lg transition text-slate-400 hover:text-white flex items-center gap-1">
-                <i data-lucide="zap" class="w-3 h-3"></i>
-                <span>Local OCR</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- AI Vision Key Configuration Box -->
-          <div id="aiKeyPanel" class="bg-slate-900/90 border border-purple-900/40 rounded-xl p-2.5 text-xs space-y-2">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-1.5">
-                <span id="aiKeyStatusDot" class="w-2 h-2 rounded-full bg-amber-400"></span>
-                <span id="aiKeyStatusLabel" class="text-[11px] font-semibold text-amber-300">Setup Free Gemini AI Vision</span>
-              </div>
-              <button type="button" onclick="toggleApiKeyInput()" id="btnToggleApiKeyInput" class="text-[11px] text-purple-400 hover:text-purple-300 font-bold underline">
-                Setup Key
-              </button>
-            </div>
-
-            <!-- Expandable Key Input -->
-            <div id="apiKeyInputContainer" class="hidden space-y-2 pt-1 border-t border-slate-800">
-              <p class="text-[10px] text-slate-400 leading-relaxed">
-                Shelf spines feature vertical layouts, reflections, and stylized fonts that standard OCR cannot read. 
-                <strong class="text-slate-200">Google Gemini 2.0 Flash</strong> reads vertical spines with 99% accuracy and automatically recognizes console platforms (PS4, PS3, Xbox, etc.).
-              </p>
-              <div class="flex gap-2">
-                <input type="password" id="geminiApiKeyInput" placeholder="Paste free Gemini API key (AIza...)" 
-                       class="flex-1 px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 font-mono focus:outline-none focus:ring-1 focus:ring-purple-500">
-                <button type="button" onclick="saveGeminiApiKey()" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg text-xs">
-                  Save
-                </button>
-              </div>
-              <div class="flex items-center justify-between text-[10px] text-slate-400 pt-0.5">
-                <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-purple-400 hover:text-purple-300 underline font-semibold flex items-center gap-1">
-                  <span>Get Free Key in 10s from Google AI Studio</span>
-                  <i data-lucide="external-link" class="w-2.5 h-2.5"></i>
-                </a>
-                <span class="text-slate-500 font-mono">1,500 scans/day free</span>
-              </div>
+            <!-- Orientation Selector -->
+            <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 text-[11px]">
+              <span class="text-slate-400 text-[10px] pl-1 font-medium">Layout:</span>
+              <select id="bulkOrientationSelect" class="bg-slate-950 border border-slate-700 text-white rounded-lg px-2 py-0.5 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-purple-500">
+                <option value="270" selected>📚 Upright on Shelf</option>
+                <option value="0">📖 Stacked Flat (Horizontal)</option>
+                <option value="90">🔄 Spines Facing Left</option>
+                <option value="180">🔃 Upside Down</option>
+              </select>
             </div>
           </div>
 
           <!-- Action Buttons: Take Photo & Library -->
-          <div class="grid grid-cols-2 gap-2 pt-1">
+          <div class="grid grid-cols-2 gap-2 pt-0.5">
             <!-- Hidden inputs: capture="environment" forces camera on mobile -->
             <input type="file" id="bulkCameraInput" accept="image/*" capture="environment" class="hidden" onchange="handleBulkImageUpload(this)">
             <input type="file" id="bulkGalleryInput" accept="image/*" class="hidden" onchange="handleBulkImageUpload(this)">
@@ -1437,12 +1399,12 @@
             </button>
           </div>
 
-          <!-- OCR / AI Progress Indicator -->
+          <!-- OCR Progress Indicator -->
           <div id="bulkOcrStatus" class="hidden bg-slate-900 border border-purple-900/40 rounded-xl p-2.5 text-xs space-y-1.5">
             <div class="flex items-center justify-between font-semibold text-slate-300">
               <span id="bulkOcrStatusText" class="flex items-center gap-2">
                 <span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span>
-                <span>Reading shelf spines...</span>
+                <span>Prepping photo & enhancing contrast...</span>
               </span>
               <span id="bulkOcrPercent" class="text-purple-400 font-bold">0%</span>
             </div>
@@ -1457,7 +1419,7 @@
               <img id="bulkImagePreviewThumb" src="" class="w-10 h-10 object-cover rounded-lg border border-slate-700" alt="Shelf preview">
               <div class="min-w-0">
                 <p id="bulkImageName" class="text-[11px] font-bold text-slate-200 truncate">shelf_photo.jpg</p>
-                <p id="bulkImageSubtitle" class="text-[10px] text-emerald-400 font-medium">Photo loaded & ready</p>
+                <p id="bulkImageSubtitle" class="text-[10px] text-emerald-400 font-medium">Scanned on device</p>
               </div>
             </div>
             <button type="button" onclick="clearBulkImage()" class="p-1.5 text-slate-400 hover:text-rose-400 transition">
@@ -1547,80 +1509,7 @@
   </div>
 
 <script>
-    let currentBulkEngine = localStorage.getItem("bulk_scanner_engine") || "ai";
-
-    function initBulkScannerEngine() {
-      const savedKey = localStorage.getItem("bulk_gemini_api_key");
-      const keyContainer = document.getElementById("apiKeyInputContainer");
-      const statusLabel = document.getElementById("aiKeyStatusLabel");
-      const statusDot = document.getElementById("aiKeyStatusDot");
-      const btnToggle = document.getElementById("btnToggleApiKeyInput");
-
-      if (savedKey) {
-        if (statusDot) statusDot.className = "w-2 h-2 rounded-full bg-emerald-400";
-        if (statusLabel) {
-          statusLabel.innerText = "✓ Free Gemini AI Vision Active (1,500 scans/day)";
-          statusLabel.className = "text-[11px] font-semibold text-emerald-400";
-        }
-        if (btnToggle) btnToggle.innerText = "Change Key";
-        if (keyContainer) keyContainer.classList.add("hidden");
-      } else {
-        if (statusDot) statusDot.className = "w-2 h-2 rounded-full bg-amber-400";
-        if (statusLabel) {
-          statusLabel.innerText = "Setup Free Gemini AI Vision";
-          statusLabel.className = "text-[11px] font-semibold text-amber-300";
-        }
-        if (btnToggle) btnToggle.innerText = "Setup Key";
-      }
-
-      setBulkEngine(currentBulkEngine);
-    }
-
-    function setBulkEngine(mode) {
-      currentBulkEngine = mode;
-      localStorage.setItem("bulk_scanner_engine", mode);
-      const btnAi = document.getElementById("btnEngineAi");
-      const btnLocal = document.getElementById("btnEngineLocal");
-      const aiKeyPanel = document.getElementById("aiKeyPanel");
-
-      if (mode === "ai") {
-        if (btnAi) btnAi.className = "px-2.5 py-1 rounded-lg transition bg-purple-600 text-white flex items-center gap-1 font-bold";
-        if (btnLocal) btnLocal.className = "px-2.5 py-1 rounded-lg transition text-slate-400 hover:text-white flex items-center gap-1 font-bold";
-        if (aiKeyPanel) aiKeyPanel.classList.remove("hidden");
-      } else {
-        if (btnLocal) btnLocal.className = "px-2.5 py-1 rounded-lg transition bg-purple-600 text-white flex items-center gap-1 font-bold";
-        if (btnAi) btnAi.className = "px-2.5 py-1 rounded-lg transition text-slate-400 hover:text-white flex items-center gap-1 font-bold";
-        if (aiKeyPanel) aiKeyPanel.classList.add("hidden");
-      }
-      if (window.lucide && lucide.createIcons) lucide.createIcons();
-    }
-
-    function toggleApiKeyInput() {
-      const container = document.getElementById("apiKeyInputContainer");
-      if (container) {
-        container.classList.toggle("hidden");
-        if (!container.classList.contains("hidden")) {
-          const input = document.getElementById("geminiApiKeyInput");
-          if (input) input.focus();
-        }
-      }
-    }
-
-    function saveGeminiApiKey() {
-      const input = document.getElementById("geminiApiKeyInput");
-      const val = input ? input.value.trim() : "";
-      if (!val) {
-        localStorage.removeItem("bulk_gemini_api_key");
-        alert("Gemini API key cleared.");
-      } else {
-        localStorage.setItem("bulk_gemini_api_key", val);
-        alert("✓ Gemini API key saved! AI Vision scanner is now active.");
-      }
-      if (input) input.value = "";
-      initBulkScannerEngine();
-    }
-
-    function processImageToCanvas(file, maxWidth, rotateDeg) {
+    function processImageToCanvas(file, maxWidth = 1600, rotateDeg = 270) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -1635,23 +1524,49 @@
             }
             const canvas = document.createElement("canvas");
             const ctx = canvas.getContext("2d");
-            if (rotateDeg === 90 || rotateDeg === 270 || rotateDeg === -90) {
+
+            if (rotateDeg === 90 || rotateDeg === 270) {
               canvas.width = h;
               canvas.height = w;
             } else {
               canvas.width = w;
               canvas.height = h;
             }
+
             ctx.save();
             if (rotateDeg === 90) {
               ctx.translate(h, 0);
               ctx.rotate(90 * Math.PI / 180);
-            } else if (rotateDeg === 270 || rotateDeg === -90) {
+            } else if (rotateDeg === 270) {
               ctx.translate(0, w);
               ctx.rotate(270 * Math.PI / 180);
+            } else if (rotateDeg === 180) {
+              ctx.translate(w, h);
+              ctx.rotate(Math.PI);
             }
             ctx.drawImage(img, 0, 0, w, h);
             ctx.restore();
+
+            // Contrast enhancement for sharp spine text
+            try {
+              const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const d = imgData.data;
+              const contrast = 1.35;
+              const factor = (259 * (contrast * 255 + 255)) / (255 * (259 - contrast * 255));
+              for (let i = 0; i < d.length; i += 4) {
+                const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                let c = factor * (gray - 128) + 128;
+                if (c < 0) c = 0;
+                if (c > 255) c = 255;
+                d[i] = c;
+                d[i + 1] = c;
+                d[i + 2] = c;
+              }
+              ctx.putImageData(imgData, 0, 0);
+            } catch (err) {
+              console.warn("Canvas contrast enhancement skipped:", err);
+            }
+
             resolve(canvas);
           };
           img.onerror = reject;
@@ -1662,47 +1577,6 @@
       });
     }
 
-    async function callGeminiVision(base64Data, apiKey) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
-      const prompt = `You are an expert video game and media appraiser. Examine this photo of video games, DVDs, Blu-rays, or books on a shelf or stacked together. Extract all visible item titles and their platform or media format (e.g., PS4, PS3, PS2, Xbox 360, Xbox One, Switch, Wii, DVD, Blu-Ray, Book) from left to right or top to bottom. Output ONLY the clean item titles with platform (e.g. 'Spider-Man PS4', 'The Orange Box Xbox 360', 'MotoGP 3 PS2'), one title per line. Do not include bullet points, numbering, quotation marks, or any introductory or concluding text.`;
-
-      const payload = {
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              {
-                inline_data: {
-                  mime_type: "image/jpeg",
-                  data: base64Data
-                }
-              }
-            ]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 2048
-        }
-      };
-
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      if (!resp.ok) {
-        const errData = await resp.json().catch(() => ({}));
-        const msg = errData?.error?.message || `Gemini API error ${resp.status}: ${resp.statusText}`;
-        throw new Error(msg);
-      }
-
-      const data = await resp.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      return text;
-    }
-
     function cleanAndFilterTitles(rawText) {
       if (!rawText) return [];
       const lines = rawText.split("\n");
@@ -1710,20 +1584,46 @@
 
       for (let rawLine of lines) {
         let line = rawLine.trim();
+        // Strip leading and trailing non-alphanumeric characters
         line = line.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, "").trim();
         if (line.length < 4) continue;
+
+        // Reject lines containing brackets, braces, pipes, tildes, copyright, etc.
+        if (/[{}()\[\]<>|~_\\^@#$%=*+©®™§±«»¶¥¢]/.test(line)) continue;
+
+        // Alphanumeric ratio (at least 70% letters/digits)
         const alphaCount = (line.match(/[a-zA-Z0-9]/g) || []).length;
         if (alphaCount / line.length < 0.70) continue;
-        if (/[©®™§±«»¶¥¢~^]/.test(line)) continue;
-        const words = line.split(/\s+/).filter(Boolean);
-        const longWords = words.filter(w => w.replace(/[^a-zA-Z0-9]/g, "").length >= 3);
-        if (longWords.length === 0) continue;
-        if (/^(pal|ntsc|disc|disc\s*\d|playstation|xbox|nintendo|sega|wii|dvd|blu-ray|bluray|warning|rated|oflc|pegi|classification|manual|memory card)$/i.test(line)) {
+
+        // Reject 4+ repeated characters
+        if (/(.)\1{3,}/i.test(line)) continue;
+
+        line = line.replace(/\s+/g, " ");
+        let words = line.split(" ").filter(Boolean);
+
+        // Filter out lines that are just disjoint single letters
+        const singleLetterWords = words.filter(w => w.length === 1 && !/^[0-9]$/.test(w));
+        if (words.length > 2 && (singleLetterWords.length / words.length) > 0.35) continue;
+
+        // Clean stray 1-2 letter edge tokens from the line (e.g. "rosin MotoGP3 al l" -> "MotoGP3")
+        if (words.length >= 3) {
+          if (/^[a-z]{1,2}$/.test(words[0])) words.shift();
+          if (/^[a-z]{1,2}$/.test(words[words.length - 1])) words.pop();
+        }
+        line = words.join(" ").trim();
+
+        // Words requirement: at least one word >= 4 characters, or recognized gaming terms
+        const hasSubstantialWord = words.some(w => w.length >= 4 || /^(nba|wwe|ea|ps1|ps2|ps3|ps4|ps5|gt|cod|wii)$/i.test(w));
+        if (!hasSubstantialWord) continue;
+
+        // Generic hardware / packaging words to ignore
+        if (/^(pal|ntsc|disc|disc\s*\d|playstation(\s*\d)?|xbox(\s*(one|360|series))?|nintendo(\s*switch)?|sega|wii(\s*u)?|dvd|blu-ray|bluray|warning|rated|oflc|pegi|classification|manual|memory card|all rights reserved)$/i.test(line)) {
           continue;
         }
+
         validTitles.push(line);
       }
-      return validTitles;
+      return [...new Set(validTitles)];
     }
 
     async function handleBulkImageUpload(input) {
@@ -1748,75 +1648,18 @@
       reader.readAsDataURL(file);
 
       statusBox.classList.remove("hidden");
-      percentText.innerText = "0%";
-      progressBar.style.width = "0%";
-
-      const geminiKey = localStorage.getItem("bulk_gemini_api_key");
-
-      // 1. AI Vision Mode
-      if (currentBulkEngine === "ai") {
-        if (!geminiKey) {
-          statusBox.classList.add("hidden");
-          const container = document.getElementById("apiKeyInputContainer");
-          if (container) container.classList.remove("hidden");
-          const inputEl = document.getElementById("geminiApiKeyInput");
-          if (inputEl) inputEl.focus();
-          alert("To use AI Vision, please paste your free Google Gemini API Key (click 'Setup Key').\n\nOr switch to 'Local OCR' for offline scanning.");
-          input.value = "";
-          return;
-        }
-
-        statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Prepping photo for AI Vision...</span>`;
-        percentText.innerText = "20%";
-        progressBar.style.width = "20%";
-
-        try {
-          const canvas = await processImageToCanvas(file, 1600, 0);
-          percentText.innerText = "45%";
-          progressBar.style.width = "45%";
-
-          const base64Data = canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
-          statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Gemini 2.0 Flash reading spine titles & platforms...</span>`;
-          percentText.innerText = "70%";
-          progressBar.style.width = "70%";
-
-          const aiText = await callGeminiVision(base64Data, geminiKey);
-          const lines = aiText.split("\n")
-            .map(l => l.trim().replace(/^[\*\-\d\.\)\s]+/, '').replace(/^["']|["']$/g, '').trim())
-            .filter(l => l.length >= 3);
-
-          if (lines.length > 0) {
-            const textarea = document.getElementById("lotTextarea");
-            const existing = textarea.value.trim();
-            textarea.value = existing ? `${existing}\n${lines.join("\n")}` : lines.join("\n");
-            percentText.innerText = "100%";
-            progressBar.style.width = "100%";
-            statusText.innerHTML = `<span class="text-emerald-400 font-bold">✓ AI Vision extracted ${lines.length} titles with platforms!</span>`;
-            setTimeout(() => statusBox.classList.add("hidden"), 4000);
-          } else {
-            statusText.innerHTML = `<span class="text-amber-400 font-semibold">No titles detected. Try another photo or type titles below.</span>`;
-            setTimeout(() => statusBox.classList.add("hidden"), 4500);
-          }
-        } catch (err) {
-          console.error("AI Vision error:", err);
-          statusText.innerHTML = `<span class="text-rose-400 font-semibold">AI Vision note: ${err.message || 'Error processing'}.</span>`;
-          setTimeout(() => statusBox.classList.add("hidden"), 5000);
-        } finally {
-          input.value = "";
-        }
-        return;
-      }
-
-      // 2. Local OCR Mode
-      statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Prepping & rotating canvas for Local OCR...</span>`;
+      statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Prepping photo & enhancing contrast...</span>`;
       percentText.innerText = "15%";
       progressBar.style.width = "15%";
 
       try {
-        if (typeof Tesseract === "undefined") throw new Error("OCR library is loading, please try again in a moment.");
-        
-        // Rotate 270 deg so vertical shelf spines become horizontal
-        const canvas = await processImageToCanvas(file, 1600, 270);
+        if (typeof Tesseract === "undefined") throw new Error("Local OCR engine loading, please retry in a moment.");
+
+        const rotSelect = document.getElementById("bulkOrientationSelect");
+        const rotateDeg = parseInt(rotSelect ? rotSelect.value : "270", 10);
+
+        // Rotate and enhance contrast on canvas
+        const canvas = await processImageToCanvas(file, 1600, rotateDeg);
         percentText.innerText = "35%";
         progressBar.style.width = "35%";
 
@@ -1826,7 +1669,7 @@
               const pct = Math.round((m.progress || 0) * 100);
               percentText.innerText = `${pct}%`;
               progressBar.style.width = `${pct}%`;
-              statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Scanning shelf spines (${pct}%)...</span>`;
+              statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Scanning shelf spines locally (${pct}%)...</span>`;
             }
           }
         });
@@ -1841,17 +1684,17 @@
           const textarea = document.getElementById("lotTextarea");
           const existing = textarea.value.trim();
           textarea.value = existing ? `${existing}\n${lines.join("\n")}` : lines.join("\n");
-          statusText.innerHTML = `<span class="text-emerald-400 font-bold">✓ Extracted ${lines.length} titles from photo!</span>`;
+          statusText.innerHTML = `<span class="text-emerald-400 font-bold">✓ Extracted ${lines.length} titles! Review below & click Calculate.</span>`;
           percentText.innerText = "100%";
           progressBar.style.width = "100%";
-          setTimeout(() => statusBox.classList.add("hidden"), 3500);
+          setTimeout(() => statusBox.classList.add("hidden"), 4000);
         } else {
-          statusText.innerHTML = `<span class="text-amber-400 font-semibold">Local OCR couldn't read stylized spine fonts. Use "✨ AI Vision" for 99% accuracy or paste titles below.</span>`;
+          statusText.innerHTML = `<span class="text-amber-400 font-semibold">No clean titles found. Check the Layout dropdown (e.g. Upright vs Flat Stack), or use the Mobile Pro-Tip below!</span>`;
           setTimeout(() => statusBox.classList.add("hidden"), 6000);
         }
       } catch (err) {
         console.error("Local OCR error:", err);
-        statusText.innerHTML = `<span class="text-rose-400 font-semibold">Local OCR note: ${err.message || 'Error processing image'}.</span>`;
+        statusText.innerHTML = `<span class="text-rose-400 font-semibold">OCR note: ${err.message || 'Error processing image'}. You can type titles below.</span>`;
         setTimeout(() => statusBox.classList.add("hidden"), 5000);
       } finally {
         input.value = "";
@@ -1867,7 +1710,6 @@
 
     function openLotModal() {
       document.getElementById("lotModal").classList.remove("hidden");
-      initBulkScannerEngine();
       lucide.createIcons();
     }
     function closeLotModal() {
