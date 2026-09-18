@@ -289,6 +289,65 @@ def fetch_category_items(
     return list(items_by_id.values())
 
 
+def extract_year(title: Optional[str]) -> Optional[int]:
+    """Extract a release or edition year from a product/game title."""
+    if not title:
+        return None
+
+    # 1. 4-digit years (1970 - 2035)
+    m = re.search(r"\b(19[7-9]\d|20[0-3]\d)\b", title)
+    if m:
+        return int(m.group(1))
+
+    # 2. 2K series: "2K7", "2K14", "2K24"
+    m = re.search(r"\b2K(\d{1,2})\b", title, re.IGNORECASE)
+    if m:
+        val = int(m.group(1))
+        return 2000 + val if val < 50 else 1900 + val
+
+    # 3. Apostrophe years: "'09", "'15", "'98"
+    m = re.search(r"['\u2019](\d{2})\b", title)
+    if m:
+        val = int(m.group(1))
+        return 2000 + val if val < 50 else 1900 + val
+
+    # 4. Split season: "09/10", "19/20"
+    m = re.search(r"\b(\d{2})/(\d{2})\b", title)
+    if m:
+        val = int(m.group(1))
+        return 2000 + val if val < 50 else 1900 + val
+
+    # 5. Leading zero 2-digit years: "01" - "09"
+    m = re.search(r"\b(0[1-9])\b", title)
+    if m:
+        return 2000 + int(m.group(1))
+
+    # 6. 90s years: "90" - "99"
+    m = re.search(r"\b(9[0-9])\b", title)
+    if m:
+        return 1900 + int(m.group(1))
+
+    # 7. 2-digit years 10-35 following common annual title patterns or franchises
+    sports_pattern = (
+        r"(?:FIFA|FC|NBA|Madden|NHL|NFL|PGA|Tiger Woods|F1|Formula 1|Formula One|"
+        r"MotoGP|WRC|SBK|AFL|NRL|Rugby|Cricket|WWE|Smackdown|RAW|Tour de France|"
+        r"Football Manager|Cycling|Superbike|MXGP|PES|Pro Evolution)"
+        r"\D*?\b(1[0-9]|2[0-9]|3[0-5])\b"
+    )
+    m = re.search(sports_pattern, title, re.IGNORECASE)
+    if m:
+        return 2000 + int(m.group(1))
+
+    # 8. Standalone 2-digit number (10-35)
+    m = re.search(r"\b([123]\d)\s*(?:$|\(|,|-)", title)
+    if m:
+        val = int(m.group(1))
+        if 10 <= val <= 35:
+            return 2000 + val
+
+    return None
+
+
 def transform_product(hit: Dict[str, Any]) -> Dict[str, Any]:
     """Extract and format clean fields for Excel/CSV export."""
     box_id = str(hit.get("boxId", "")).strip()
@@ -324,8 +383,11 @@ def transform_product(hit: Dict[str, Any]) -> Dict[str, Any]:
     elif in_stock_online:
         stock_status = "Online Only"
 
+    year = extract_year(name)
+
     return {
         "Product Name": name,
+        "Year": year if year is not None else "",
         "Cash Value ($)": cash_price,
         "Voucher Value ($)": exchange_price,
         "CeX Sell Price ($)": sell_price,
@@ -350,6 +412,7 @@ def export_to_csv(products: List[Dict[str, Any]], filepath: str):
 
     headers = [
         "Product Name",
+        "Year",
         "Cash Value ($)",
         "Voucher Value ($)",
         "CeX Sell Price ($)",
@@ -370,6 +433,7 @@ def export_to_csv(products: List[Dict[str, Any]], filepath: str):
         for p in products:
             writer.writerow([
                 p.get("Product Name"),
+                p.get("Year", ""),
                 f"{p.get('Cash Value ($)', 0):.2f}",
                 f"{p.get('Voucher Value ($)', 0):.2f}",
                 f"{p.get('CeX Sell Price ($)', 0):.2f}",
@@ -422,6 +486,7 @@ def export_to_excel(
 
     columns = [
         ("Product Name", 42, regular_font, "@", None),
+        ("Year", 10, regular_font, "0", None),
         ("Cash Value ($)", 16, bold_font, "$#,##0.00", cash_header_fill),
         ("Voucher Value ($)", 18, bold_font, "$#,##0.00", voucher_header_fill),
         ("CeX Sell Price ($)", 18, regular_font, "$#,##0.00", None),
@@ -505,6 +570,7 @@ def export_to_excel(
             ws.row_dimensions[row_idx].height = 20
             vals = [
                 p.get("Product Name"),
+                p.get("Year"),
                 p.get("Cash Value ($)"),
                 p.get("Voucher Value ($)"),
                 p.get("CeX Sell Price ($)"),
@@ -522,7 +588,7 @@ def export_to_excel(
                 cell.border = thin_border
                 cell.font = cell_font
 
-                if col_idx == 11 and val:
+                if col_idx == 12 and val:
                     cell.value = "Sell to CeX"
                     cell.hyperlink = val
                     cell.font = link_font
@@ -593,6 +659,7 @@ def main():
     parser.add_argument("--output", "-o", type=str, default="cex_products", help="Base output filename (without extension)")
     parser.add_argument("--min-cash", type=float, default=0, help="Minimum cash price filter in AUD")
     parser.add_argument("--min-voucher", type=float, default=0, help="Minimum trade voucher price filter in AUD")
+    parser.add_argument("--sort", choices=["cash", "voucher", "year_desc", "year_asc", "name"], default="cash", help="Sort order (cash, voucher, year_desc, year_asc, name)")
     parser.add_argument("--list-systems", action="store_true", help="List all available systems and platforms on CeX")
 
     args = parser.parse_args()
@@ -687,6 +754,17 @@ def main():
     all_products = []
     for prods in category_product_map.values():
         all_products.extend(prods)
+
+    if args.sort == "year_desc":
+        all_products.sort(key=lambda x: (x.get("Year") or 0, x.get("Cash Value ($)", 0)), reverse=True)
+    elif args.sort == "year_asc":
+        all_products.sort(key=lambda x: (x.get("Year") if isinstance(x.get("Year"), int) else 99999, -x.get("Cash Value ($)", 0)))
+    elif args.sort == "voucher":
+        all_products.sort(key=lambda x: x.get("Voucher Value ($)", 0), reverse=True)
+    elif args.sort == "name":
+        all_products.sort(key=lambda x: x.get("Product Name", "").lower())
+    else:
+        all_products.sort(key=lambda x: x.get("Cash Value ($)", 0), reverse=True)
 
     print(f"\n{'=' * 60}")
     print(f" Extraction Complete: {len(all_products):,} total products retrieved.")

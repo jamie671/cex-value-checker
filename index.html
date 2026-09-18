@@ -158,6 +158,8 @@
           <option value="voucher_desc">Trade: High to Low</option>
           <option value="bonus_desc">Trade Extra: High to Low</option>
           <option value="sell_desc">CeX Sell: High to Low</option>
+          <option value="year_desc">📅 Year: Newest First</option>
+          <option value="year_asc">📅 Year: Oldest First</option>
           <option value="name_asc">Name: A to Z</option>
         </select>
       </div>
@@ -609,11 +611,74 @@
       }
     }
 
+    function extractYear(title) {
+      if (!title) return null;
+
+      // 1. 4-digit years (1970 - 2035)
+      // e.g. "2010 FIFA World Cup", "PES 2018", "F1 2021", "Virtua Tennis 2009", "AFL Live 2004"
+      const fourDigitMatch = title.match(/\b(19[7-9]\d|20[0-3]\d)\b/);
+      if (fourDigitMatch) {
+        return parseInt(fourDigitMatch[1], 10);
+      }
+
+      // 2. 2K series: "2K7", "2K14", "2K24"
+      const twoKMatch = title.match(/\b2K(\d{1,2})\b/i);
+      if (twoKMatch) {
+        const val = parseInt(twoKMatch[1], 10);
+        return val < 50 ? 2000 + val : 1900 + val;
+      }
+
+      // 3. Apostrophe years: "'09", "'15", "'98"
+      const apostropheMatch = title.match(/['\u2019](\d{2})\b/);
+      if (apostropheMatch) {
+        const val = parseInt(apostropheMatch[1], 10);
+        return val < 50 ? 2000 + val : 1900 + val;
+      }
+
+      // 4. Split season: "09/10", "19/20"
+      const seasonMatch = title.match(/\b(\d{2})\/(\d{2})\b/);
+      if (seasonMatch) {
+        const val = parseInt(seasonMatch[1], 10);
+        return val < 50 ? 2000 + val : 1900 + val;
+      }
+
+      // 5. Leading zero 2-digit years: "01" - "09" (e.g. "FIFA 09", "Madden 06", "Tiger Woods 09")
+      const leadingZeroMatch = title.match(/\b(0[1-9])\b/);
+      if (leadingZeroMatch) {
+        return 2000 + parseInt(leadingZeroMatch[1], 10);
+      }
+
+      // 6. 90s years: "90" - "99" (e.g. "FIFA 98", "NBA Live 95", "NHL 99")
+      const ninetiesMatch = title.match(/\b(9[0-9])\b/);
+      if (ninetiesMatch) {
+        return 1900 + parseInt(ninetiesMatch[1], 10);
+      }
+
+      // 7. 2-digit years 10-35 following common annual title patterns or franchises
+      const sportsAnnualPattern = /(?:FIFA|FC|NBA|Madden|NHL|NFL|PGA|Tiger Woods|F1|Formula 1|Formula One|MotoGP|WRC|SBK|AFL|NRL|Rugby|Cricket|WWE|Smackdown|RAW|Tour de France|Football Manager|Cycling|Superbike|MXGP|PES|Pro Evolution)\D*?\b(1[0-9]|2[0-9]|3[0-5])\b/i;
+      const sportsMatch = title.match(sportsAnnualPattern);
+      if (sportsMatch) {
+        return 2000 + parseInt(sportsMatch[1], 10);
+      }
+
+      // 8. Standalone 2-digit number (10-35) preceded by space and followed by end/parenthesis/hyphen/comma
+      const endMatch = title.match(/\b([123]\d)\s*(?:$|\(|,|\-)/);
+      if (endMatch) {
+        const val = parseInt(endMatch[1], 10);
+        if (val >= 10 && val <= 35) {
+          return 2000 + val;
+        }
+      }
+
+      return null;
+    }
+
     function formatProduct(h) {
       const cash = parseFloat(h.cashPriceCalculated || 0);
       const voucher = parseFloat(h.exchangePriceCalculated || 0);
       const sell = parseFloat(h.sellPrice || 0);
       const bonus = Math.round((voucher - cash) * 100) / 100;
+      const year = extractYear(h.boxName);
       return {
         id: h.boxId,
         name: h.boxName,
@@ -623,6 +688,7 @@
         voucher: voucher,
         sell: sell,
         bonus: bonus,
+        year: year,
         image: h.imageUrls?.small || h.imageUrls?.medium || "",
         url: `https://au.webuy.com/sell/product-detail?id=${h.boxId}`
       };
@@ -719,6 +785,18 @@
         if (sort === "voucher_desc") return b.voucher - a.voucher;
         if (sort === "bonus_desc") return b.bonus - a.bonus;
         if (sort === "sell_desc") return b.sell - a.sell;
+        if (sort === "year_desc") {
+          const yA = a.year || 0;
+          const yB = b.year || 0;
+          if (yA !== yB) return yB - yA;
+          return b.cash - a.cash;
+        }
+        if (sort === "year_asc") {
+          const yA = a.year || 99999;
+          const yB = b.year || 99999;
+          if (yA !== yB) return yA - yB;
+          return b.cash - a.cash;
+        }
         if (sort === "name_asc") return a.name.localeCompare(b.name);
         return b.cash - a.cash;
       });
@@ -790,6 +868,11 @@
                   <span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
                     ${escapeHtml(p.category)}
                   </span>
+                  ${p.year ? `
+                    <span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                      <span>📅 ${p.year}</span>
+                    </span>
+                  ` : ''}
                   <span class="text-[10px] text-slate-500 font-mono">ID: ${p.id}</span>
                 </div>
                 <h4 class="text-xs font-bold text-white leading-snug line-clamp-2">
@@ -1016,10 +1099,10 @@
       if (filteredProducts.length === 0) return alert("No products to export!");
 
       const wsData = [
-        ["Product Name", "Cash Value ($)", "Voucher Value ($)", "CeX Sell Price ($)", "Voucher Bonus ($)", "Category", "Barcode / ID", "CeX Sell Link"]
+        ["Product Name", "Year", "Cash Value ($)", "Voucher Value ($)", "CeX Sell Price ($)", "Voucher Bonus ($)", "Category", "Barcode / ID", "CeX Sell Link"]
       ];
       filteredProducts.forEach(p => {
-        wsData.push([p.name, p.cash, p.voucher, p.sell, p.bonus, p.category, p.id, p.url]);
+        wsData.push([p.name, p.year || "", p.cash, p.voucher, p.sell, p.bonus, p.category, p.id, p.url]);
       });
 
       const wb = XLSX.utils.book_new();
@@ -1032,9 +1115,9 @@
       toggleExportMenu();
       if (filteredProducts.length === 0) return alert("No products to export!");
 
-      let csv = "Product Name,Cash Value ($),Voucher Value ($),CeX Sell Price ($),Voucher Bonus ($),Category,Barcode / ID,CeX Sell Link\n";
+      let csv = "Product Name,Year,Cash Value ($),Voucher Value ($),CeX Sell Price ($),Voucher Bonus ($),Category,Barcode / ID,CeX Sell Link\n";
       filteredProducts.forEach(p => {
-        csv += `"${p.name.replace(/"/g, '""')}",${p.cash.toFixed(2)},${p.voucher.toFixed(2)},${p.sell.toFixed(2)},${p.bonus.toFixed(2)},"${p.category.replace(/"/g, '""')}","${p.id}","${p.url}"\n`;
+        csv += `"${p.name.replace(/"/g, '""')}",${p.year || ""},${p.cash.toFixed(2)},${p.voucher.toFixed(2)},${p.sell.toFixed(2)},${p.bonus.toFixed(2)},"${p.category.replace(/"/g, '""')}","${p.id}","${p.url}"\n`;
       });
 
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -1206,18 +1289,22 @@
             const cash = parseFloat(hit.cashPriceCalculated || 0);
             const voucher = parseFloat(hit.exchangePriceCalculated || 0);
             const sell = parseFloat(hit.sellPrice || 0);
+            const year = extractYear(hit.boxName);
             totalCash += cash;
             totalVoucher += voucher;
             pricedItems.push({
               name: hit.boxName,
+              year: year,
               cash: cash,
               voucher: voucher,
               sell: sell,
               url: `https://au.webuy.com/sell/product-detail?id=${hit.boxId}`
             });
           } else {
+            const year = extractYear(originalLine);
             pricedItems.push({
               name: originalLine + " (Not found on CeX)",
+              year: year,
               cash: 0,
               voucher: 0,
               sell: 0,
@@ -1240,6 +1327,7 @@
           <tr class="hover:bg-slate-900/60">
             <td class="p-2 font-medium">
               <a href="${item.url}" target="_blank" class="hover:text-blue-400 hover:underline">${escapeHtml(item.name)}</a>
+              ${item.year ? `<span class="ml-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">📅 ${item.year}</span>` : ''}
             </td>
             <td class="p-2 text-right font-bold text-emerald-400">$${item.cash.toFixed(2)}</td>
             <td class="p-2 text-right font-bold text-blue-400">$${item.voucher.toFixed(2)}</td>
