@@ -372,6 +372,46 @@ def extract_year(title: Optional[str]) -> Optional[int]:
     return None
 
 
+def get_ebay_search_url(
+    title: str,
+    category_name: str = "",
+    system_name: str = "",
+    sold_only: bool = True,
+) -> str:
+    """Generate a clean 1-tap eBay Australia search URL for live sold or active comps."""
+    if not title:
+        return "https://www.ebay.com.au"
+
+    clean = title
+    # Remove rating tags like (M), (PG), (MA15+), (R18+), (G), etc.
+    clean = re.sub(r"\b(G|PG|M|MA15\+|R18\+|E|T|AO)\b", "", clean, flags=re.IGNORECASE)
+    # Remove **DNU** or (DNU)
+    clean = re.sub(r"\*+DNU\*+|\(DNU\)", "", clean, flags=re.IGNORECASE)
+    # Remove empty brackets
+    clean = re.sub(r"\(\s*\)", "", clean)
+    clean = " ".join(clean.split()).strip()
+
+    clean_sys = re.sub(r"^(Gaming Software|Console Software|Software),\s*", "", system_name, flags=re.IGNORECASE).strip()
+    lower = clean.lower()
+    cat_lower = (category_name or "").lower()
+    sys_lower = clean_sys.lower()
+
+    suffix = ""
+    if "blu-ray" in cat_lower and not any(k in lower for k in ["blu-ray", "bluray", "4k"]):
+        suffix = " Blu-Ray"
+    elif "dvd" in cat_lower and "dvd" not in lower:
+        suffix = " DVD"
+    elif "vhs" in cat_lower and "vhs" not in lower:
+        suffix = " VHS"
+    elif clean_sys and clean_sys.lower() != "all" and sys_lower not in lower:
+        suffix = f" {clean_sys}"
+
+    query = (clean + suffix).strip()
+    encoded = urllib.parse.quote_plus(query)
+    base = f"https://www.ebay.com.au/sch/i.html?_nkw={encoded}"
+    return f"{base}&LH_Sold=1&LH_Complete=1" if sold_only else base
+
+
 def transform_product(hit: Dict[str, Any]) -> Dict[str, Any]:
     """Extract and format clean fields for Excel/CSV export."""
     box_id = str(hit.get("boxId", "")).strip()
@@ -393,6 +433,7 @@ def transform_product(hit: Dict[str, Any]) -> Dict[str, Any]:
         system = str(hit["productLineName"])
 
     product_url = f"https://au.webuy.com/sell/product-detail?id={box_id}"
+    ebay_sold_url = get_ebay_search_url(name, category, system, sold_only=True)
     image_url = ""
     if isinstance(hit.get("imageUrls"), dict):
         image_url = hit["imageUrls"].get("medium") or hit["imageUrls"].get("small") or ""
@@ -424,6 +465,7 @@ def transform_product(hit: Dict[str, Any]) -> Dict[str, Any]:
         "Stock Status": stock_status,
         "Barcode / ID": box_id,
         "CeX Sell Link": product_url,
+        "eBay Sold Link": ebay_sold_url,
         "Image URL": image_url,
     }
 
@@ -449,6 +491,7 @@ def export_to_csv(products: List[Dict[str, Any]], filepath: str):
         "Stock Status",
         "Barcode / ID",
         "CeX Sell Link",
+        "eBay Sold Link",
     ]
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -470,6 +513,7 @@ def export_to_csv(products: List[Dict[str, Any]], filepath: str):
                 p.get("Stock Status"),
                 p.get("Barcode / ID"),
                 p.get("CeX Sell Link"),
+                p.get("eBay Sold Link"),
             ])
     print(f" Saved CSV: {filepath} ({len(products):,} products)")
 
@@ -520,7 +564,8 @@ def export_to_excel(
         ("Category", 22, regular_font, "@", None),
         ("Stock Status", 16, regular_font, "@", None),
         ("Barcode / ID", 16, regular_font, "@", None),
-        ("CeX Sell Link", 20, link_font, "@", None),
+        ("CeX Sell Link", 18, link_font, "@", None),
+        ("eBay Sold Link", 18, link_font, "@", None),
     ]
 
     all_products = []
@@ -605,6 +650,7 @@ def export_to_excel(
                 p.get("Stock Status"),
                 p.get("Barcode / ID"),
                 p.get("CeX Sell Link"),
+                p.get("eBay Sold Link"),
             ]
 
             for col_idx, (val, (_, _, cell_font, num_fmt, _)) in enumerate(zip(vals, columns), 1):
@@ -614,6 +660,11 @@ def export_to_excel(
 
                 if col_idx == 12 and val:
                     cell.value = "Sell to CeX"
+                    cell.hyperlink = val
+                    cell.font = link_font
+                    cell.alignment = Alignment(horizontal="center")
+                elif col_idx == 13 and val:
+                    cell.value = "eBay Sold Comps"
                     cell.hyperlink = val
                     cell.font = link_font
                     cell.alignment = Alignment(horizontal="center")

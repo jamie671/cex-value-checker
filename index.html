@@ -760,6 +760,37 @@
       return null;
     }
 
+    function getEbaySearchUrl(title, categoryName = "", systemName = "", soldOnly = true) {
+      if (!title) return "https://www.ebay.com.au";
+      let clean = title;
+      // Strip Australian film / game rating brackets: (G), (PG), (M), (MA15+), (R18+), (E), (T)
+      clean = clean.replace(/\b(G|PG|M|MA15\+|R18\+|E|T|AO)\b/gi, "");
+      // Strip CeX internal flags: **DNU**, (DNU), (inc. ...)
+      clean = clean.replace(/\*+DNU\*+|\(DNU\)/gi, "");
+      // Clean empty parentheses or redundant symbols
+      clean = clean.replace(/\(\s*\)/g, "").replace(/\s+/g, " ").trim();
+
+      const cleanSys = (systemName || "").replace(/^(Gaming Software|Console Software|Software),\s*/i, "").trim();
+      const lower = clean.toLowerCase();
+      const catLower = (categoryName || "").toLowerCase();
+      const sysLower = cleanSys.toLowerCase();
+
+      let suffix = "";
+      if (catLower.includes("blu-ray") && !lower.includes("blu-ray") && !lower.includes("bluray") && !lower.includes("4k")) {
+        suffix = " Blu-Ray";
+      } else if (catLower.includes("dvd") && !lower.includes("dvd")) {
+        suffix = " DVD";
+      } else if (catLower.includes("vhs") && !lower.includes("vhs")) {
+        suffix = " VHS";
+      } else if (cleanSys && cleanSys.toUpperCase() !== "ALL" && !lower.includes(sysLower)) {
+        suffix = ` ${cleanSys}`;
+      }
+
+      const finalQuery = (clean + suffix).trim();
+      const base = "https://www.ebay.com.au/sch/i.html?_nkw=" + encodeURIComponent(finalQuery);
+      return soldOnly ? base + "&LH_Sold=1&LH_Complete=1" : base;
+    }
+
     function formatProduct(h) {
       const cash = parseFloat(h.cashPriceCalculated || 0);
       const voucher = parseFloat(h.exchangePriceCalculated || 0);
@@ -907,17 +938,52 @@
       const toShow = filteredProducts.slice(0, displayLimit);
 
       if (toShow.length === 0) {
+        const cleanQuery = q || "";
+        const emptyEbaySoldUrl = getEbaySearchUrl(cleanQuery, "", currentSystemObj.name, true);
+        const emptyEbayActiveUrl = getEbaySearchUrl(cleanQuery, "", currentSystemObj.name, false);
+
         list.innerHTML = `
-          <div class="py-12 text-center text-slate-500 text-xs space-y-3">
-            <p>No products found in <b>${currentSystemObj.label || currentSystemObj.name}</b>.</p>
-            ${currentSystemObj.name !== "ALL" && q ? `
-              <button onclick="selectSystemByName('ALL')" class="px-4 py-2 bg-red-600 text-white rounded-xl text-xs font-bold shadow-md hover:bg-red-500 transition">
-                Search "${escapeHtml(q)}" Across ALL Systems
-              </button>
+          <div class="py-12 text-center text-slate-400 text-xs space-y-4 max-w-md mx-auto px-4">
+            <div class="w-12 h-12 rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center justify-center mx-auto text-slate-400">
+              <i data-lucide="search-x" class="w-6 h-6"></i>
+            </div>
+            <div>
+              <p class="text-sm font-bold text-white">No products found on CeX</p>
+              <p class="text-slate-400 mt-1">
+                ${q ? `"${escapeHtml(q)}" is not currently listed in <b>${escapeHtml(currentSystemObj.label || currentSystemObj.name)}</b>.` : `No products match your current filters.`}
+              </p>
+            </div>
+            ${q ? `
+              <div class="bg-slate-950/80 border border-slate-800 rounded-2xl p-3.5 text-left space-y-2.5 shadow-md">
+                <div class="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
+                  <i data-lucide="shopping-bag" class="w-3.5 h-3.5 text-blue-400"></i>
+                  <span>Instant Market Value on eBay Australia:</span>
+                </div>
+                <div class="flex flex-col sm:flex-row gap-2">
+                  <a href="${emptyEbaySoldUrl}" target="_blank"
+                     class="flex-1 py-2.5 px-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-600/30 transition flex items-center justify-center gap-1.5">
+                    <i data-lucide="check-circle-2" class="w-4 h-4"></i>
+                    <span>Check eBay Sold Comps</span>
+                    <i data-lucide="external-link" class="w-3 h-3 opacity-70"></i>
+                  </a>
+                  <a href="${emptyEbayActiveUrl}" target="_blank"
+                     class="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 transition flex items-center justify-center gap-1">
+                    <span>Active Listings</span>
+                    <i data-lucide="external-link" class="w-3 h-3 opacity-70"></i>
+                  </a>
+                </div>
+                ${currentSystemObj.name !== "ALL" ? `
+                  <button onclick="selectSystemByName('ALL')" class="w-full py-2 px-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5">
+                    <i data-lucide="globe" class="w-3.5 h-3.5"></i>
+                    <span>Search "${escapeHtml(q)}" Across ALL CeX Systems</span>
+                  </button>
+                ` : ''}
+              </div>
             ` : ''}
           </div>
         `;
         loadMoreBtn.parentElement.classList.add("hidden");
+        lucide.createIcons();
         return;
       }
 
@@ -942,6 +1008,9 @@
             </div>
           `;
         }
+
+        const ebaySoldUrl = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, true);
+        const ebayActiveUrl = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, false);
 
         return `
           <div class="bg-slate-900 border border-slate-800/90 rounded-2xl p-3.5 shadow-sm transition hover:border-slate-700">
@@ -997,21 +1066,37 @@
 
                 ${profitHtml}
 
-                <div class="mt-2.5 flex items-center justify-between gap-2">
-                  ${p.bonus > 0 ? `
-                    <span class="text-[10px] text-purple-400 font-medium">
-                      +$${p.bonus.toFixed(2)} trade bonus
-                    </span>
-                  ` : `
-                    <span class="text-[10px] text-slate-500 font-medium">
-                      ${(p.cash === 0 && p.voucher === 0) ? 'Check eBay value below' : ''}
-                    </span>
-                  `}
-                  <a href="${p.url}" target="_blank" 
-                     class="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-[11px] transition">
-                    <span>${(p.cash > 0 || p.voucher > 0) ? 'Sell on CeX' : 'View on CeX'}</span>
-                    <i data-lucide="external-link" class="w-3 h-3"></i>
-                  </a>
+                <div class="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between gap-2 flex-wrap">
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <a href="${ebaySoldUrl}" target="_blank" 
+                       class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl ${
+                         (p.cash === 0 && p.voucher === 0) 
+                           ? 'bg-blue-600 hover:bg-blue-500 text-white font-black shadow-md shadow-blue-600/30' 
+                           : 'bg-blue-950/50 hover:bg-blue-900/60 text-blue-300 border border-blue-800/50 font-bold'
+                       } text-[10px] transition" title="Search completed & sold listings on eBay Australia">
+                      <i data-lucide="shopping-bag" class="w-3 h-3 text-blue-400"></i>
+                      <span>eBay Sold Comps</span>
+                      <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-70"></i>
+                    </a>
+                    <a href="${ebayActiveUrl}" target="_blank" 
+                       class="inline-flex items-center gap-1 px-2 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-300 border border-slate-700 font-medium text-[10px] transition" title="Search active listings on eBay Australia">
+                      <span>Active</span>
+                      <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-60"></i>
+                    </a>
+                  </div>
+
+                  <div class="flex items-center gap-2 ml-auto">
+                    ${p.bonus > 0 ? `
+                      <span class="text-[10px] text-purple-400 font-semibold">
+                        +$${p.bonus.toFixed(2)} trade bonus
+                      </span>
+                    ` : ''}
+                    <a href="${p.url}" target="_blank" 
+                       class="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-[11px] transition shrink-0">
+                      <span>${(p.cash > 0 || p.voucher > 0) ? 'Sell on CeX' : 'CeX Details'}</span>
+                      <i data-lucide="external-link" class="w-3 h-3"></i>
+                    </a>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1399,20 +1484,26 @@
             totalVoucher += voucher;
             pricedItems.push({
               name: hit.boxName,
+              rawTitle: originalLine,
+              category: hit.categoryFriendlyName || hit.categoryName || "",
               year: year,
               cash: cash,
               voucher: voucher,
               sell: sell,
+              found: true,
               url: `https://au.webuy.com/sell/product-detail?id=${hit.boxId}`
             });
           } else {
             const year = extractYear(originalLine);
             pricedItems.push({
-              name: originalLine + " (Not found on CeX)",
+              name: originalLine,
+              rawTitle: originalLine,
+              category: "",
               year: year,
               cash: 0,
               voucher: 0,
               sell: 0,
+              found: false,
               url: "#"
             });
           }
@@ -1428,17 +1519,37 @@
         document.getElementById("lotNetProfit").innerText = `${netCash >= 0 ? '+' : ''}$${netCash.toFixed(2)}`;
         document.getElementById("lotNetProfit").className = `text-base font-black ${netCash >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
 
-        document.getElementById("lotTableBody").innerHTML = pricedItems.map(item => `
-          <tr class="hover:bg-slate-900/60">
+        document.getElementById("lotTableBody").innerHTML = pricedItems.map(item => {
+          const ebaySoldUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true);
+          return `
+          <tr class="hover:bg-slate-900/60 border-b border-slate-900">
             <td class="p-2 font-medium">
-              <a href="${item.url}" target="_blank" class="hover:text-blue-400 hover:underline">${escapeHtml(item.name)}</a>
-              ${item.year ? `<span class="ml-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">📅 ${item.year}</span>` : ''}
+              <div class="flex items-center gap-1.5 flex-wrap">
+                ${item.found ? `
+                  <a href="${item.url}" target="_blank" class="hover:text-blue-400 hover:underline text-white font-semibold">${escapeHtml(item.name)}</a>
+                ` : `
+                  <span class="text-rose-300 font-semibold">${escapeHtml(item.name)}</span>
+                  <span class="px-1.5 py-0.5 rounded bg-rose-950/60 text-rose-400 border border-rose-800/40 text-[9px] font-bold">Not on CeX</span>
+                `}
+                ${item.year ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">📅 ${item.year}</span>` : ''}
+              </div>
+              <div class="mt-1 flex items-center gap-2">
+                <a href="${ebaySoldUrl}" target="_blank" class="inline-flex items-center gap-1 text-[10px] font-bold ${
+                  item.found ? 'text-blue-400 hover:text-blue-300 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-800/40' : 'text-white bg-blue-600 hover:bg-blue-500 px-2 py-0.5 rounded shadow-sm shadow-blue-600/30'
+                }">
+                  <i data-lucide="shopping-bag" class="w-3 h-3"></i>
+                  <span>${item.found ? 'eBay Sold' : 'Check eBay Sold Market'}</span>
+                  <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-70"></i>
+                </a>
+              </div>
             </td>
-            <td class="p-2 text-right font-bold text-emerald-400">$${item.cash.toFixed(2)}</td>
-            <td class="p-2 text-right font-bold text-blue-400">$${item.voucher.toFixed(2)}</td>
-            <td class="p-2 text-right text-slate-400">$${item.sell.toFixed(2)}</td>
+            <td class="p-2 text-right font-bold text-emerald-400">${item.cash > 0 ? `$${item.cash.toFixed(2)}` : '<span class="text-slate-600">$0.00</span>'}</td>
+            <td class="p-2 text-right font-bold text-blue-400">${item.voucher > 0 ? `$${item.voucher.toFixed(2)}` : '<span class="text-slate-600">$0.00</span>'}</td>
+            <td class="p-2 text-right text-slate-400">${item.sell > 0 ? `$${item.sell.toFixed(2)}` : '<span class="text-slate-600">-</span>'}</td>
           </tr>
-        `).join("");
+          `;
+        }).join("");
+        lucide.createIcons();
 
       } catch (err) {
         console.error(err);
