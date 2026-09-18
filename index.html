@@ -1392,15 +1392,23 @@
 
       <div class="p-4 space-y-3 overflow-y-auto flex-1">
         <!-- Local Spine Scanner Action Bar (Option 2) -->
+        <!-- Spine Scanner Engine Selector & Action Bar -->
         <div class="bg-slate-950/80 border border-slate-800 rounded-2xl p-3 space-y-2.5 shadow-inner">
           <div class="flex items-center justify-between flex-wrap gap-2 text-xs">
-            <div class="flex items-center gap-1.5 font-bold text-slate-200">
-              <i data-lucide="scan-line" class="w-4 h-4 text-purple-400"></i>
-              <span>Local Spine Scanner (On-Device):</span>
+            <!-- Engine Toggle Tabs -->
+            <div class="flex items-center gap-1 bg-slate-900 p-0.5 rounded-xl border border-slate-800 text-[11px]">
+              <button type="button" id="btnEngineLocal" onclick="setBulkScannerMode('local')"
+                      class="px-2.5 py-1 rounded-lg font-bold bg-purple-600 text-white shadow-sm transition">
+                📱 On-Device (No Key)
+              </button>
+              <button type="button" id="btnEngineAi" onclick="setBulkScannerMode('ai')"
+                      class="px-2.5 py-1 rounded-lg font-bold text-slate-400 hover:text-white transition">
+                ✨ AI Vision (Free Key)
+              </button>
             </div>
             
-            <!-- Orientation Selector -->
-            <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 text-[11px]">
+            <!-- Orientation Selector (Visible in Local Mode) -->
+            <div id="bulkOrientationWrap" class="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 text-[11px]">
               <span class="text-slate-400 text-[10px] pl-1 font-medium">Layout:</span>
               <select id="bulkOrientationSelect" class="bg-slate-950 border border-slate-700 text-white rounded-lg px-2 py-0.5 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-purple-500">
                 <option value="270" selected>📚 Upright on Shelf</option>
@@ -1409,6 +1417,24 @@
                 <option value="180">🔃 Upside Down</option>
               </select>
             </div>
+          </div>
+
+          <!-- Free Gemini API Key Input (Shown only in AI Vision Mode) -->
+          <div id="bulkAiKeyWrap" class="hidden bg-purple-950/20 border border-purple-800/40 rounded-xl p-2.5 space-y-1.5 text-xs">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-purple-300 flex items-center gap-1">
+                <i data-lucide="key" class="w-3.5 h-3.5 text-purple-400"></i>
+                Google Gemini API Key (100% Free):
+              </span>
+              <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-purple-400 hover:text-purple-300 font-bold underline text-[10px] flex items-center gap-0.5">
+                <span>Get Free Key</span>
+                <i data-lucide="external-link" class="w-2.5 h-2.5"></i>
+              </a>
+            </div>
+            <input type="password" id="bulkGeminiApiKey" placeholder="AIzaSy..." 
+                   class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                   onchange="localStorage.setItem('bulk_gemini_key', this.value.trim())">
+            <p class="text-[10px] text-slate-400">Takes 15 seconds to create with any Google account. No waitlist or billing required.</p>
           </div>
 
           <!-- Action Buttons: Take Photo & Library -->
@@ -1469,11 +1495,17 @@
         </div>
 
         <div>
-          <div class="flex items-center justify-between mb-1.5">
+          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
             <label class="text-xs font-bold text-slate-300">Titles to Evaluate (one per line):</label>
-            <button type="button" onclick="document.getElementById('lotTextarea').value=''" class="text-[11px] text-slate-500 hover:text-slate-300">
-              Clear Text
-            </button>
+            <div class="flex items-center gap-3">
+              <button type="button" onclick="pasteFromClipboard()" class="text-[11px] text-purple-400 hover:text-purple-300 font-bold flex items-center gap-1 cursor-pointer">
+                <i data-lucide="clipboard" class="w-3.5 h-3.5"></i>
+                <span>Paste Copied Spines</span>
+              </button>
+              <button type="button" onclick="document.getElementById('lotTextarea').value=''" class="text-[11px] text-slate-500 hover:text-slate-300 cursor-pointer">
+                Clear Text
+              </button>
+            </div>
           </div>
           <textarea id="lotTextarea" rows="5" placeholder="Spider-Man PS4&#10;The Orange Box Xbox 360&#10;NBA Jam PS3&#10;Fire Pro Wrestling World PS4&#10;Mario Kart Wii..."
                     class="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-purple-500 font-mono"></textarea>
@@ -1617,6 +1649,101 @@
       });
     }
 
+    function setBulkScannerMode(mode) {
+      localStorage.setItem("bulk_scanner_mode", mode);
+      const btnLocal = document.getElementById("btnEngineLocal");
+      const btnAi = document.getElementById("btnEngineAi");
+      const orientWrap = document.getElementById("bulkOrientationWrap");
+      const keyWrap = document.getElementById("bulkAiKeyWrap");
+
+      if (!btnLocal || !btnAi) return;
+
+      if (mode === "ai") {
+        btnAi.className = "px-2.5 py-1 rounded-lg font-bold bg-purple-600 text-white shadow-sm transition cursor-pointer";
+        btnLocal.className = "px-2.5 py-1 rounded-lg font-bold text-slate-400 hover:text-white transition cursor-pointer";
+        if (orientWrap) orientWrap.classList.add("hidden");
+        if (keyWrap) keyWrap.classList.remove("hidden");
+      } else {
+        btnLocal.className = "px-2.5 py-1 rounded-lg font-bold bg-purple-600 text-white shadow-sm transition cursor-pointer";
+        btnAi.className = "px-2.5 py-1 rounded-lg font-bold text-slate-400 hover:text-white transition cursor-pointer";
+        if (orientWrap) orientWrap.classList.remove("hidden");
+        if (keyWrap) keyWrap.classList.add("hidden");
+      }
+      if (window.lucide && lucide.createIcons) lucide.createIcons();
+    }
+
+    async function pasteFromClipboard() {
+      try {
+        if (!navigator.clipboard || !navigator.clipboard.readText) {
+          alert("Please tap into the text box and choose Paste.");
+          return;
+        }
+        const text = await navigator.clipboard.readText();
+        if (!text || !text.trim()) {
+          alert("Your clipboard is empty! In Apple Photos or Google Lens, tap 'Live Text', select the spines, tap Copy, then tap Paste here.");
+          return;
+        }
+        const textarea = document.getElementById("lotTextarea");
+        const existing = textarea.value.trim();
+        textarea.value = existing ? `${existing}\n${text.trim()}` : text.trim();
+      } catch (err) {
+        alert("Clipboard permission blocked. Long-press inside the box below to paste.");
+      }
+    }
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = reader.result;
+          const base64 = res.split(',')[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function callGeminiVision(base64Data, apiKey) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
+      const prompt = `You are an expert video game appraiser. Examine this photo of game spines on a shelf or stacked flat. Extract every visible video game title and platform (e.g. 'The Orange Box Xbox 360', 'Tiger Woods PGA Tour 09 Xbox 360', 'Street Fighter IV Xbox 360', 'Half-Life 2 Xbox', 'Just Cause 2 Xbox 360', 'MotoGP 3 PS2', 'Spider-Man PS4', 'Grand Theft Auto V PS4'). Output ONLY the cleaned titles with platform, one title per line. No numbers, no bullet points, no extra text.`;
+
+      const payload = {
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              {
+                inline_data: {
+                  mime_type: "image/jpeg",
+                  data: base64Data
+                }
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 2048
+        }
+      };
+
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        const msg = errData?.error?.message || `Gemini API error ${resp.status}: ${resp.statusText}`;
+        throw new Error(msg);
+      }
+
+      const data = await resp.json();
+      return data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    }
+
     function cleanAndFilterTitles(rawText) {
       if (!rawText) return [];
       const lines = rawText.split("\n");
@@ -1624,46 +1751,55 @@
 
       for (let rawLine of lines) {
         let line = rawLine.trim();
-        // Strip leading and trailing non-alphanumeric characters
+        if (!line) continue;
+
+        // 1. Remove brackets and parentheses as space (handles unclosed [ or ( from OCR noise)
+        line = line.replace(/[[\](){}<>]/g, " ");
+
+        // 2. Strip OCR noise symbols (replace with space, don't discard line)
+        line = line.replace(/[|~_\\^@#$%=*+©®™§±«»¶¥¢£°“”!?:;]/g, " ");
+        line = line.replace(/["'‘’`]/g, " ");
+
+        // 3. Remove hardware / publisher / rating / catalog boilerplate tags
+        line = line.replace(/\b(xbox(\s*(360|one|series))?|playstation(\s*\d)?|ps[1-5]|nintendo(\s*switch)?|pal|ntsc|cusa\s*\d+|mw2\s*\d+|dnu|oflc|pegi|blu-ray|dvd|five games one box|total nonstop action wrestling|rockband)\b/gi, " ");
+
+        // 4. Clean leading/trailing non-alphanumerics
         line = line.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, "").trim();
-        if (line.length < 4) continue;
-
-        // Reject lines containing brackets, braces, pipes, tildes, copyright, etc.
-        if (/[{}()\[\]<>|~_\\^@#$%=*+©®™§±«»¶¥¢]/.test(line)) continue;
-
-        // Alphanumeric ratio (at least 70% letters/digits)
-        const alphaCount = (line.match(/[a-zA-Z0-9]/g) || []).length;
-        if (alphaCount / line.length < 0.70) continue;
-
-        // Reject 4+ repeated characters
-        if (/(.)\1{3,}/i.test(line)) continue;
-
         line = line.replace(/\s+/g, " ");
+
+        if (line.length < 3) continue;
+
+        // 5. Clean stray single letter junk or stray digit fragments at edges
         let words = line.split(" ").filter(Boolean);
-
-        // Filter out lines that are just disjoint single letters
-        const singleLetterWords = words.filter(w => w.length === 1 && !/^[0-9]$/.test(w));
-        if (words.length > 2 && (singleLetterWords.length / words.length) > 0.35) continue;
-
-        // Clean stray 1-2 letter edge tokens from the line (e.g. "rosin MotoGP3 al l" -> "MotoGP3")
-        if (words.length >= 3) {
-          if (/^[a-z]{1,2}$/.test(words[0])) words.shift();
-          if (/^[a-z]{1,2}$/.test(words[words.length - 1])) words.pop();
+        while (words.length > 1 && (words[0].length === 1 || /^\d+$/.test(words[0]))) {
+          words.shift();
+        }
+        while (words.length > 1 && (words[words.length - 1].length === 1 || (/^\d+$/.test(words[words.length - 1]) && parseInt(words[words.length - 1]) > 3000))) {
+          words.pop();
         }
         line = words.join(" ").trim();
 
-        // Words requirement: at least one word >= 4 characters, or recognized gaming terms
-        const hasSubstantialWord = words.some(w => w.length >= 4 || /^(nba|wwe|ea|ps1|ps2|ps3|ps4|ps5|gt|cod|wii)$/i.test(w));
-        if (!hasSubstantialWord) continue;
+        // 6. Must contain letters, not pure numbers
+        const hasLetters = /[a-zA-Z]{3,}/.test(line);
+        const isPureDigits = /^[0-9\s]+$/.test(line);
+        if (!hasLetters || isPureDigits) continue;
 
-        // Generic hardware / packaging words to ignore
-        if (/^(pal|ntsc|disc|disc\s*\d|playstation(\s*\d)?|xbox(\s*(one|360|series))?|nintendo(\s*switch)?|sega|wii(\s*u)?|dvd|blu-ray|bluray|warning|rated|oflc|pegi|classification|manual|memory card|all rights reserved)$/i.test(line)) {
-          continue;
+        if (line.length >= 3) {
+          validTitles.push(line);
         }
-
-        validTitles.push(line);
       }
-      return [...new Set(validTitles)];
+
+      // Deduplicate case-insensitively
+      const seen = new Set();
+      const deduped = [];
+      for (const t of validTitles) {
+        const k = t.toLowerCase();
+        if (!seen.has(k)) {
+          seen.add(k);
+          deduped.push(t);
+        }
+      }
+      return deduped;
     }
 
     async function handleBulkImageUpload(input) {
@@ -1688,6 +1824,51 @@
       reader.readAsDataURL(file);
 
       statusBox.classList.remove("hidden");
+
+      // Check current engine mode
+      const currentMode = localStorage.getItem("bulk_scanner_mode") || "local";
+      const geminiKey = (document.getElementById("bulkGeminiApiKey")?.value || localStorage.getItem("bulk_gemini_key") || "").trim();
+
+      if (currentMode === "ai") {
+        if (!geminiKey) {
+          statusText.innerHTML = `<span class="text-amber-400 font-semibold">Please enter your free Google Gemini API key above to use AI Vision.</span>`;
+          return;
+        }
+        localStorage.setItem("bulk_gemini_key", geminiKey);
+        statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Analyzing shelf spines with Gemini AI Vision...</span>`;
+        percentText.innerText = "50%";
+        progressBar.style.width = "50%";
+
+        try {
+          const base64Data = await fileToBase64(file);
+          const aiText = await callGeminiVision(base64Data, geminiKey);
+          const lines = aiText.split("\n")
+            .map(l => l.trim().replace(/^[\*\-\d\.\)\s]+/, '').replace(/^["']|["']$/g, '').trim())
+            .filter(l => l.length >= 3);
+
+          if (lines.length > 0) {
+            const textarea = document.getElementById("lotTextarea");
+            const existing = textarea.value.trim();
+            textarea.value = existing ? `${existing}\n${lines.join("\n")}` : lines.join("\n");
+            percentText.innerText = "100%";
+            progressBar.style.width = "100%";
+            statusText.innerHTML = `<span class="text-emerald-400 font-bold">✓ AI Vision extracted ${lines.length} titles with 100% accuracy!</span>`;
+            setTimeout(() => statusBox.classList.add("hidden"), 4000);
+          } else {
+            statusText.innerHTML = `<span class="text-amber-400 font-semibold">No titles detected. Try another photo or type titles below.</span>`;
+            setTimeout(() => statusBox.classList.add("hidden"), 5000);
+          }
+        } catch (err) {
+          console.error("AI Vision error:", err);
+          statusText.innerHTML = `<span class="text-rose-400 font-semibold">AI Vision note: ${err.message || 'Error processing'}.</span>`;
+          setTimeout(() => statusBox.classList.add("hidden"), 6000);
+        } finally {
+          input.value = "";
+        }
+        return;
+      }
+
+      // --- Local OCR Mode ---
       statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Prepping photo & enhancing contrast...</span>`;
       percentText.innerText = "15%";
       progressBar.style.width = "15%";
@@ -1709,16 +1890,26 @@
               const pct = Math.round((m.progress || 0) * 100);
               percentText.innerText = `${pct}%`;
               progressBar.style.width = `${pct}%`;
-              statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Scanning shelf spines locally (${pct}%)...</span>`;
+              statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Scanning spines on-device (${pct}%)...</span>`;
             }
           }
         });
 
         const ret = await worker.recognize(canvas);
-        await worker.terminate();
+        let lines = cleanAndFilterTitles(ret.data.text || "");
 
-        const rawText = ret.data.text || "";
-        const lines = cleanAndFilterTitles(rawText);
+        // Dual-pass fallback: if 0 titles found, automatically try alternate orientation!
+        if (lines.length === 0) {
+          const fallbackDeg = (rotateDeg === 270) ? 0 : 270;
+          statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Testing alternate angle (${fallbackDeg}°)...</span>`;
+          const altCanvas = await processImageToCanvas(file, 1600, fallbackDeg);
+          const altRet = await worker.recognize(altCanvas);
+          const altLines = cleanAndFilterTitles(altRet.data.text || "");
+          if (altLines.length > 0) {
+            lines = altLines;
+          }
+        }
+        await worker.terminate();
 
         if (lines.length > 0) {
           const textarea = document.getElementById("lotTextarea");
@@ -1729,7 +1920,7 @@
           progressBar.style.width = "100%";
           setTimeout(() => statusBox.classList.add("hidden"), 4000);
         } else {
-          statusText.innerHTML = `<span class="text-amber-400 font-semibold">No clean titles found. Check the Layout dropdown (e.g. Upright vs Flat Stack), or use the Mobile Pro-Tip below!</span>`;
+          statusText.innerHTML = `<span class="text-amber-400 font-semibold">No clean titles found. Check the Layout dropdown, or tap 'Paste Copied Spines' using mobile Live Text!</span>`;
           setTimeout(() => statusBox.classList.add("hidden"), 6000);
         }
       } catch (err) {
@@ -1750,7 +1941,12 @@
 
     function openLotModal() {
       document.getElementById("lotModal").classList.remove("hidden");
-      lucide.createIcons();
+      const savedKey = localStorage.getItem("bulk_gemini_key") || "";
+      const keyInput = document.getElementById("bulkGeminiApiKey");
+      if (keyInput && savedKey) keyInput.value = savedKey;
+      const savedMode = localStorage.getItem("bulk_scanner_mode") || "local";
+      setBulkScannerMode(savedMode);
+      if (window.lucide && lucide.createIcons) lucide.createIcons();
     }
     function closeLotModal() {
       document.getElementById("lotModal").classList.add("hidden");
