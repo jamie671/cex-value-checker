@@ -2,7 +2,7 @@
 """
 CeX Australia (au.webuy.com) Multi-Category & Multi-System Price & Trade Extractor
 Extracts product names, cash prices, CeX voucher (trade) values, sell prices, and product links.
-Supports single/multiple URLs, category IDs, and entire systems/product lines.
+Supports single/multiple URLs, category IDs, and entire systems/product lines (modern & retro).
 """
 
 import argparse
@@ -17,7 +17,6 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-# Try to use certifi for SSL if available
 try:
     import certifi
     SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
@@ -61,6 +60,36 @@ ATTRIBUTES_TO_RETRIEVE = [
     "Grade",
 ]
 
+# Aliases for retro and shorthand system names mapping directly to category IDs
+SYSTEM_ALIASES = {
+    "n64": ("Nintendo 64", ["1099", "401", "1098"]),
+    "nintendo 64": ("Nintendo 64", ["1099", "401", "1098"]),
+    "ps1": ("PlayStation 1", ["1081", "1080", "1079"]),
+    "playstation 1": ("PlayStation 1", ["1081", "1080", "1079"]),
+    "psx": ("PlayStation 1", ["1081", "1080", "1079"]),
+    "snes": ("Super Nintendo (SNES)", ["1102", "1101", "1100"]),
+    "super nes": ("Super Nintendo (SNES)", ["1102", "1101", "1100"]),
+    "super nintendo": ("Super Nintendo (SNES)", ["1102", "1101", "1100"]),
+    "nes": ("Nintendo Entertainment System (NES)", ["1148", "1147", "1146"]),
+    "game boy": ("Game Boy", ["1087", "1086", "1085"]),
+    "gb": ("Game Boy", ["1087", "1086", "1085"]),
+    "gba": ("Game Boy Advance", ["1092", "1091", "1090"]),
+    "game boy advance": ("Game Boy Advance", ["1092", "1091", "1090"]),
+    "gbc": ("Game Boy Color", ["1089", "1088"]),
+    "game boy color": ("Game Boy Color", ["1089", "1088"]),
+    "dreamcast": ("Sega Dreamcast", ["51", "50", "1139"]),
+    "sega dreamcast": ("Sega Dreamcast", ["51", "50", "1139"]),
+    "saturn": ("Sega Saturn", ["1151", "1150", "1149"]),
+    "sega saturn": ("Sega Saturn", ["1151", "1150", "1149"]),
+    "mega drive": ("Sega Mega Drive", ["1096", "1095", "1094"]),
+    "genesis": ("Sega Mega Drive", ["1096", "1095", "1094"]),
+    "master system": ("Sega Master System", ["1145", "1144", "1143"]),
+    "game gear": ("Sega Game Gear", ["1142", "1141", "1140"]),
+    "32x": ("Sega 32X", ["1093"]),
+    "mega-cd": ("Sega Mega-CD", ["1097"]),
+    "original xbox": ("Xbox (Original)", None),
+}
+
 
 def send_algolia_queries(requests_payload: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Send one or more query requests to the Algolia endpoint in a single HTTP POST."""
@@ -90,7 +119,30 @@ def list_available_systems() -> List[Tuple[str, int]]:
 
 
 def get_categories_for_system(system_name: str) -> List[Tuple[str, str, int]]:
-    """Get all categories (ID, Name, Count) under a given system/product line."""
+    """Get all categories (ID, Name, Count) under a given system/product line or retro alias."""
+    norm = system_name.lower().strip()
+    if norm in SYSTEM_ALIASES and SYSTEM_ALIASES[norm][1]:
+        clean_name, cat_ids = SYSTEM_ALIASES[norm]
+        sub_requests = [
+            {
+                "indexName": INDEX_NAME,
+                "filters": f"categoryId:{cid} AND boxVisibilityOnWeb=1 AND boxBuyAllowed=1",
+                "attributesToRetrieve": ["categoryId", "categoryFriendlyName", "categoryName"],
+                "hitsPerPage": 1,
+            }
+            for cid in cat_ids
+        ]
+        sub_results = send_algolia_queries(sub_requests)
+        cat_info = []
+        for cid, sub_res in zip(cat_ids, sub_results):
+            cnt = sub_res.get("nbHits", 0)
+            hits = sub_res.get("hits", [])
+            name = hits[0].get("categoryFriendlyName") or hits[0].get("categoryName") if hits else f"Category {cid}"
+            cat_info.append((cid, name, cnt))
+        cat_info.sort(key=lambda x: x[2], reverse=True)
+        return cat_info
+
+    # Otherwise query productLineName
     payload = [
         {
             "indexName": INDEX_NAME,
@@ -105,15 +157,12 @@ def get_categories_for_system(system_name: str) -> List[Tuple[str, str, int]]:
         return []
 
     cat_id_counts = results[0].get("facets", {}).get("categoryId", {})
-    cat_friendly_names = results[0].get("facets", {}).get("categoryFriendlyName", {})
-
-    # Fetch 1 hit per categoryId to map ID -> Friendly Name accurately
     cat_info = []
     if cat_id_counts:
         sub_requests = [
             {
                 "indexName": INDEX_NAME,
-                "filters": f'categoryId:{cid}',
+                "filters": f"categoryId:{cid}",
                 "attributesToRetrieve": ["categoryId", "categoryFriendlyName", "categoryName"],
                 "hitsPerPage": 1,
             }
@@ -165,10 +214,7 @@ def fetch_category_items(
     query: str = "",
     extra_filter: str = "",
 ) -> List[Dict[str, Any]]:
-    """
-    Fetch all items for a category or system.
-    Uses automatic numeric range partitioning if hits > 1,000 to bypass Algolia's 1000 limit.
-    """
+    """Fetch all items for a category or system with automatic price bracket partitioning."""
     base_filter_parts = ["boxVisibilityOnWeb=1", "boxBuyAllowed=1"]
     if category_id:
         base_filter_parts.append(f"categoryId:{category_id}")
@@ -179,7 +225,6 @@ def fetch_category_items(
 
     base_filter = " AND ".join(base_filter_parts)
 
-    # 1. Initial count check
     init_req = [
         {
             "indexName": INDEX_NAME,
@@ -198,7 +243,6 @@ def fetch_category_items(
 
     items_by_id = {}
 
-    # 2. If <= 1000 hits, fetch in single request
     if total_hits <= 1000:
         req = [
             {
@@ -215,7 +259,6 @@ def fetch_category_items(
             items_by_id[hit["boxId"]] = hit
         return list(items_by_id.values())
 
-    # 3. If > 1000 hits, partition by price ranges so every partition is <= 1000
     brackets = [
         ("cashPriceCalculated <= 2", "cashPriceCalculated <= 2"),
         ("cashPriceCalculated > 2 AND cashPriceCalculated <= 5", "cashPriceCalculated > 2 AND cashPriceCalculated <= 5"),
@@ -348,13 +391,7 @@ def export_to_excel(
     filepath: str,
     title: str = "CeX Product Catalog",
 ):
-    """
-    Export products to a styled Excel workbook (.xlsx):
-    - "Summary" tab with overall counts and highest-value items
-    - "All Products" master tab
-    - Individual tabs for each category (e.g. Wii Software, Wii Consoles, etc.)
-    - Formatted currency, percentage, and clickable hyperlinks
-    """
+    """Export products to a styled Excel workbook (.xlsx)."""
     try:
         import openpyxl
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -366,7 +403,6 @@ def export_to_excel(
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    # Styles
     header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="1A365D", end_color="1A365D", fill_type="solid")
     cash_header_fill = PatternFill(start_color="166534", end_color="166534", fill_type="solid")
@@ -439,7 +475,6 @@ def export_to_excel(
         c6.number_format = "$#,##0.00"
         sum_row += 1
 
-    # Total row
     ws_summary.cell(row=sum_row, column=1, value="TOTAL").font = Font(name="Segoe UI", size=10, bold=True, color="1E3A8A")
     ws_summary.cell(row=sum_row, column=2, value=len(all_products)).font = bold_font
     ws_summary.cell(row=sum_row, column=2).number_format = "#,##0"
@@ -525,14 +560,26 @@ def main():
         description="CeX Australia Price & Trade Value Extractor (All Systems & Categories)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  # Extract all categories for the Nintendo Wii system:
+  # Extract all categories for Nintendo Wii, Switch, or PS5:
   python3 cex_scraper.py --system "Wii" -o wii_complete_catalog
+  python3 cex_scraper.py --system "Switch" -o switch_complete_catalog
+  python3 cex_scraper.py --system "PlayStation 5" -o ps5_catalog
 
-  # Extract specific categories (e.g. Wii Software 795, Wii Consoles 796):
+  # Extract retro systems (N64, SNES, PS1, Game Boy, GBA, Dreamcast, Mega Drive, Saturn):
+  python3 cex_scraper.py --system "N64" -o n64_catalog
+  python3 cex_scraper.py --system "PS1" -o ps1_catalog
+  python3 cex_scraper.py --system "SNES" -o snes_catalog
+  python3 cex_scraper.py --system "Game Boy" -o gameboy_catalog
+  python3 cex_scraper.py --system "Dreamcast" -o dreamcast_catalog
+
+  # Extract specific category IDs:
   python3 cex_scraper.py --categories 795,796 -o wii_selection
 
   # Extract using direct CeX URLs:
   python3 cex_scraper.py "https://au.webuy.com/sell/search?categoryIds=795&categoryName=Wii%20Software"
+
+  # Search keyword across all systems:
+  python3 cex_scraper.py --query "Silent Hill" -o silent_hill_search
 
   # List all available gaming & tech systems:
   python3 cex_scraper.py --list-systems
@@ -540,7 +587,7 @@ def main():
     )
 
     parser.add_argument("urls", nargs="*", help="One or more CeX category/search URLs")
-    parser.add_argument("--system", "-s", type=str, help='System / Product line name (e.g. "Wii", "Switch", "PlayStation 5", "Retro Gaming")')
+    parser.add_argument("--system", "-s", type=str, help='System / Product line name (e.g. "Wii", "N64", "PS1", "SNES", "Switch", "PS5", "Xbox 360", "Retro Gaming")')
     parser.add_argument("--categories", "-c", type=str, help="Comma-separated category IDs (e.g. 795,796,797,1109,1119)")
     parser.add_argument("--query", "-q", type=str, default="", help="Optional search keyword filter")
     parser.add_argument("--output", "-o", type=str, default="cex_products", help="Base output filename (without extension)")
@@ -558,6 +605,10 @@ def main():
         print("-" * 54)
         for name, count in systems:
             print(f"{name:<40} {count:>12,}")
+        print("\nSupported Retro Aliases:")
+        print("  N64 / Nintendo 64, PS1 / PlayStation 1, SNES / Super NES, NES,")
+        print("  Game Boy, GBA / Game Boy Advance, Game Boy Color,")
+        print("  Dreamcast, Saturn / Sega Saturn, Mega Drive, Master System, Game Gear")
         return
 
     category_product_map: Dict[str, List[Dict[str, Any]]] = {}
@@ -611,6 +662,12 @@ def main():
             cat_name = prods[0]["Category"] if prods else f"Category {cid}"
             category_product_map[cat_name] = prods
 
+    elif args.query:
+        print(f"\n Searching CeX Australia globally for: '{args.query}'...")
+        raw_hits = fetch_category_items(query=args.query)
+        prods = [transform_product(h) for h in raw_hits]
+        category_product_map[f"Search: {args.query}"] = prods
+
     else:
         default_url = "https://au.webuy.com/sell/search?categoryIds=795&categoryName=Wii%20Software"
         print(f"No arguments provided. Defaulting to Wii Software:\n  {default_url}")
@@ -643,7 +700,7 @@ def main():
     xlsx_path = f"{base_name}.xlsx"
 
     export_to_csv(all_products, csv_path)
-    export_to_excel(category_product_map, xlsx_path, title=f"CeX Australia Catalog - {args.system or 'Export'}")
+    export_to_excel(category_product_map, xlsx_path, title=f"CeX Australia Catalog - {args.system or args.query or 'Export'}")
 
     print("\n Top 5 Highest Cash Value Products:")
     top_5 = sorted(all_products, key=lambda x: x.get("Cash Value ($)", 0), reverse=True)[:5]
