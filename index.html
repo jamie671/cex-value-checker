@@ -114,7 +114,7 @@
       <div class="flex items-center justify-between text-xs text-slate-400 font-semibold mb-2">
         <div class="flex items-center gap-1.5">
           <span>PLATFORM:</span>
-          <span id="currentSystemNameBadge" class="text-red-400 font-bold bg-red-950/40 px-2 py-0.5 rounded-md border border-red-800/40">Wii</span>
+          <span id="currentSystemNameBadge" class="text-red-400 font-bold bg-red-950/40 px-2 py-0.5 rounded-md border border-red-800/40">🌐 All Systems</span>
         </div>
         <button type="button" onclick="openSystemModal()" class="text-red-400 hover:text-red-300 font-bold flex items-center gap-1">
           <i data-lucide="grid" class="w-3.5 h-3.5"></i>
@@ -369,7 +369,7 @@
       { name: "Handheld Gaming PCs", label: "Steam Deck / Handhelds" }
     ];
 
-    let currentSystemObj = QUICK_PILLS[1]; // default Wii
+    let currentSystemObj = QUICK_PILLS[0]; // default All Systems
     let allProducts = [];
     let filteredProducts = [];
     let activeCategoryIds = new Set();
@@ -381,7 +381,7 @@
       lucide.createIcons();
       renderQuickPills();
       renderSystemModal();
-      selectSystem(QUICK_PILLS[1]); // Wii
+      selectSystem(QUICK_PILLS[0]); // All Systems
       setupEvents();
     });
 
@@ -481,12 +481,16 @@
       if (modal) modal.classList.add("hidden");
     }
 
-    async function loadGlobalSearch(customQuery = "") {
-      setLoading(true, "Searching across ALL CeX systems...");
+    let globalSearchSeq = 0;
+    let searchDebounceTimer = null;
+
+    async function loadGlobalSearch(customQuery = null) {
+      const thisSeq = ++globalSearchSeq;
+      const q = customQuery !== null ? customQuery : document.getElementById("searchInput").value.trim();
+      setLoading(true, q ? `Searching for "${q}" across ALL systems...` : "Loading CeX catalog...");
       document.getElementById("subcatSection").classList.add("hidden");
 
       try {
-        const q = customQuery || document.getElementById("searchInput").value.trim();
         const baseFilter = "boxVisibilityOnWeb=1 AND boxBuyAllowed=1";
         const attrs = [
           "boxId", "boxName", "cashPriceCalculated", "exchangePriceCalculated", "sellPrice",
@@ -508,15 +512,18 @@
           })
         });
         const data = await res.json();
-        const hits = data.results[0]?.hits || [];
+        if (thisSeq !== globalSearchSeq) return;
 
+        const hits = data.results[0]?.hits || [];
         allProducts = hits.map(h => formatProduct(h));
         activeCategoryIds.clear();
-        applyFilters();
+        applyFilters(true);
       } catch (err) {
         console.error("Global search error:", err);
       } finally {
-        setLoading(false);
+        if (thisSeq === globalSearchSeq) {
+          setLoading(false);
+        }
       }
     }
 
@@ -686,19 +693,22 @@
       applyFilters();
     }
 
-    function applyFilters() {
+    function applyFilters(isGlobal = false) {
       const q = document.getElementById("searchInput").value.toLowerCase().trim();
       const minCash = parseFloat(document.getElementById("minCashSelector").value || 0);
       const sort = document.getElementById("sortSelector").value;
+      const isAllSystems = currentSystemObj && currentSystemObj.name === "ALL";
 
       filteredProducts = allProducts.filter(p => {
         if (activeCategoryIds.size > 0 && !activeCategoryIds.has(p.categoryId)) return false;
         if (minCash > 0 && p.cash < minCash) return false;
-        if (q) {
-          const matchName = p.name.toLowerCase().includes(q);
-          const matchCat = p.category.toLowerCase().includes(q);
-          const matchId = p.id.toLowerCase().includes(q);
-          if (!matchName && !matchCat && !matchId) return false;
+        if (q && !isAllSystems && !isGlobal) {
+          const words = q.split(/\s+/).filter(Boolean);
+          const nameLower = (p.name || "").toLowerCase();
+          const catLower = (p.category || "").toLowerCase();
+          const idLower = (p.id || "").toLowerCase();
+          const matches = words.every(w => nameLower.includes(w) || catLower.includes(w) || idLower.includes(w));
+          if (!matches) return false;
         }
         return true;
       });
@@ -838,16 +848,37 @@
       search.addEventListener("input", () => {
         clearBtn.classList.toggle("hidden", !search.value);
         if (currentSystemObj.name === "ALL") {
-          loadGlobalSearch(search.value);
+          clearTimeout(searchDebounceTimer);
+          searchDebounceTimer = setTimeout(() => {
+            loadGlobalSearch(search.value.trim());
+          }, 250);
         } else {
           applyFilters();
+        }
+      });
+
+      search.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          search.blur();
+          if (currentSystemObj.name === "ALL") {
+            clearTimeout(searchDebounceTimer);
+            loadGlobalSearch(search.value.trim());
+          } else {
+            applyFilters();
+          }
         }
       });
 
       clearBtn.addEventListener("click", () => {
         search.value = "";
         clearBtn.classList.add("hidden");
-        applyFilters();
+        if (currentSystemObj.name === "ALL") {
+          clearTimeout(searchDebounceTimer);
+          loadGlobalSearch("");
+        } else {
+          applyFilters();
+        }
       });
 
       document.getElementById("shopAskingPrice").addEventListener("input", renderCards);
@@ -954,10 +985,13 @@
         const resData = await queryRes.json();
         const hits = resData.results[0]?.hits || [];
         if (hits.length > 0) {
-          const newProds = hits.map(h => formatProduct(h));
-          allProducts = newProds;
-          selectSystem(findSystemDef("ALL"));
-          applyFilters();
+          allProducts = hits.map(h => formatProduct(h));
+          currentSystemObj = findSystemDef("ALL");
+          const badge = document.getElementById("currentSystemNameBadge");
+          if (badge) badge.innerText = currentSystemObj.label || currentSystemObj.name;
+          renderQuickPills();
+          activeCategoryIds.clear();
+          applyFilters(true);
         } else {
           alert("Barcode " + code + " not found in CeX database.");
         }
