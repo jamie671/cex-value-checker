@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>CeX Value Scanner & Profit Checker</title>
+  
+  <!-- Web App Capabilities (iOS / Android) -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CeX Value">
+  <meta name="theme-color" content="#0f172a">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-192.png">
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- HTML5 QR & Barcode Scanner for Mobile Cameras -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <!-- SheetJS for Export -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    #reader video { border-radius: 12px; object-fit: cover; width: 100% !important; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen pb-24 selection:bg-red-600 selection:text-white">
+
+  <!-- Sticky Top App Bar -->
+  <header class="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800/80 px-4 py-3">
+    <div class="max-w-3xl mx-auto flex items-center justify-between gap-3">
+      <div class="flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-red-600 to-red-500 flex items-center justify-center font-black text-white text-base shadow-md shadow-red-600/30">
+          CeX
+        </div>
+        <div>
+          <h1 class="text-sm font-extrabold text-white leading-tight flex items-center gap-1.5">
+            Value Scanner
+            <span class="text-[10px] font-bold px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 border border-red-500/30">AU</span>
+          </h1>
+          <p class="text-[11px] text-slate-400 font-medium">In-Store Trade & Cash Checker</p>
+        </div>
+      </div>
+
+      <!-- Header Action Buttons -->
+      <div class="flex items-center gap-2">
+        <button id="btnOpenScanner" class="flex items-center gap-1.5 bg-red-600 hover:bg-red-500 active:scale-95 text-white px-3 py-2 rounded-xl text-xs font-bold shadow-lg shadow-red-600/30 transition">
+          <i data-lucide="scan-barcode" class="w-4 h-4"></i>
+          <span>Scan Barcode</span>
+        </button>
+        <button id="btnExportDropdown" onclick="toggleExportMenu()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
+          <i data-lucide="download" class="w-4 h-4"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Export Menu Dropdown -->
+    <div id="exportMenu" class="hidden absolute right-4 top-14 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 z-50 text-xs w-44">
+      <button onclick="exportToExcelFile()" class="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-800 text-slate-200 flex items-center gap-2">
+        <i data-lucide="sheet" class="w-3.5 h-3.5 text-emerald-400"></i> Export to Excel
+      </button>
+      <button onclick="exportToCsvFile()" class="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-800 text-slate-200 flex items-center gap-2">
+        <i data-lucide="file-text" class="w-3.5 h-3.5 text-blue-400"></i> Export to CSV
+      </button>
+    </div>
+  </header>
+
+  <main class="max-w-3xl mx-auto px-4 py-4 space-y-4">
+
+    <!-- Search & Asking Price Input -->
+    <section class="space-y-2.5">
+      <div class="relative">
+        <i data-lucide="search" class="w-5 h-5 absolute left-3.5 top-3.5 text-slate-400"></i>
+        <input type="text" id="searchInput" placeholder="Search game, console, tech, or barcode..." 
+               class="w-full pl-11 pr-10 py-3 bg-slate-900/90 border border-slate-800 rounded-2xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 transition shadow-inner">
+        <button id="btnClearSearch" class="hidden absolute right-3 top-3 p-1 text-slate-400 hover:text-white">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Quick In-Store Flip / Asking Price Filter -->
+      <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-3 flex items-center justify-between gap-3 text-xs">
+        <div class="flex items-center gap-2">
+          <div class="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold">
+            $
+          </div>
+          <div>
+            <div class="font-semibold text-slate-200">Shop Asking Price</div>
+            <div class="text-[10px] text-slate-400">Calculates instant profit margins</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="text-slate-400 font-bold">$</span>
+          <input type="number" id="shopAskingPrice" placeholder="0.00" step="0.5" min="0"
+                 class="w-20 px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-xl text-right font-bold text-white text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+        </div>
+      </div>
+    </section>
+
+    <!-- Platform Selector Bar (Horizontal Scrollable) -->
+    <section>
+      <div class="flex items-center justify-between text-xs text-slate-400 font-semibold mb-2">
+        <span>PLATFORM / SYSTEM</span>
+        <span id="currentSystemNameBadge" class="text-red-400 font-bold">Nintendo Wii</span>
+      </div>
+      <div class="flex items-center gap-2 overflow-x-auto hide-scrollbar pb-1 -mx-4 px-4" id="platformScrollList">
+        <!-- Populated via JS -->
+      </div>
+    </section>
+
+    <!-- Subcategory Pills -->
+    <section id="subcatSection" class="hidden">
+      <div class="flex flex-wrap gap-1.5" id="subcatPills">
+        <!-- Subcategory pills -->
+      </div>
+    </section>
+
+    <!-- Metrics Bar -->
+    <section class="grid grid-cols-3 gap-2.5 text-center">
+      <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-2.5">
+        <div class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Items</div>
+        <div class="text-lg font-black text-white" id="statItemCount">0</div>
+      </div>
+      <div class="bg-slate-900/80 border border-emerald-900/30 rounded-2xl p-2.5 bg-gradient-to-b from-slate-900 to-emerald-950/20">
+        <div class="text-[10px] uppercase font-bold text-emerald-400 tracking-wider">Top Cash</div>
+        <div class="text-lg font-black text-emerald-400" id="statTopCash">$0</div>
+      </div>
+      <div class="bg-slate-900/80 border border-blue-900/30 rounded-2xl p-2.5 bg-gradient-to-b from-slate-900 to-blue-950/20">
+        <div class="text-[10px] uppercase font-bold text-blue-400 tracking-wider">Top Trade</div>
+        <div class="text-lg font-black text-blue-400" id="statTopTrade">$0</div>
+      </div>
+    </section>
+
+    <!-- Sort & Filter Bar -->
+    <section class="flex items-center justify-between gap-2 text-xs">
+      <div class="flex items-center gap-1.5 text-slate-400">
+        <span>Sort:</span>
+        <select id="sortSelector" class="bg-slate-900 border border-slate-800 text-slate-200 text-xs font-semibold rounded-xl px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-red-500">
+          <option value="cash_desc">Cash: High to Low</option>
+          <option value="voucher_desc">Trade: High to Low</option>
+          <option value="bonus_desc">Trade Extra: High to Low</option>
+          <option value="name_asc">Name: A to Z</option>
+        </select>
+      </div>
+      <div class="flex items-center gap-1.5 text-slate-400">
+        <span>Min Cash:</span>
+        <select id="minCashSelector" class="bg-slate-900 border border-slate-800 text-slate-200 text-xs font-semibold rounded-xl px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-red-500">
+          <option value="0">All</option>
+          <option value="10">$10+</option>
+          <option value="25">$25+</option>
+          <option value="50">$50+</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- Loading Indicator -->
+    <div id="loadingBox" class="py-12 text-center space-y-2 hidden">
+      <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-slate-700 border-t-red-500"></div>
+      <p class="text-xs font-semibold text-slate-400">Loading CeX catalog...</p>
+    </div>
+
+    <!-- Product Cards List -->
+    <section class="space-y-2.5" id="productsList">
+      <!-- Cards populated via JS -->
+    </section>
+
+    <!-- Pagination / Load More -->
+    <div class="pt-2 text-center" id="paginationBox">
+      <button id="btnLoadMore" class="w-full py-3 bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 font-bold rounded-2xl text-xs transition shadow-md">
+        Load More Items
+      </button>
+    </div>
+
+  </main>
+
+  <!-- Barcode Scanner Modal -->
+  <div id="scannerModal" class="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col justify-between p-4 hidden">
+    <!-- Modal Header -->
+    <div class="flex items-center justify-between text-white pt-2">
+      <div class="flex items-center gap-2">
+        <i data-lucide="scan-barcode" class="w-5 h-5 text-red-500"></i>
+        <h3 class="text-sm font-bold">Scan Product Barcode</h3>
+      </div>
+      <button id="btnCloseScanner" class="w-8 h-8 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center hover:bg-slate-700">
+        <i data-lucide="x" class="w-5 h-5"></i>
+      </button>
+    </div>
+
+    <!-- Viewfinder Box -->
+    <div class="flex-1 flex flex-col items-center justify-center max-w-sm mx-auto w-full my-4">
+      <div id="reader" class="w-full bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative">
+        <!-- html5-qrcode camera attaches here -->
+      </div>
+      <p class="text-xs text-slate-400 mt-3 text-center">
+        Point phone camera at the barcode on the back of the case.
+      </p>
+    </div>
+
+    <!-- Manual Barcode Input Fallback -->
+    <div class="max-w-sm mx-auto w-full pb-4 space-y-2">
+      <div class="flex items-center gap-2">
+        <input type="text" id="manualBarcodeInput" placeholder="Or enter barcode numbers..." 
+               class="flex-1 px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-red-500">
+        <button id="btnManualBarcodeSearch" class="px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl text-xs">
+          Search
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ALGOLIA_URL = "https://search.webuy.io/1/indexes/*/queries?x-algolia-agent=Algolia%20for%20JavaScript%20(5.52.1)%3B%20Search%20(5.52.1)%3B%20Browser&x-algolia-api-key=bf79f2b6699e60a18ae330a1248b452c&x-algolia-application-id=LNNFEEWZVA";
+    const INDEX_NAME = "prod_cex_au";
+
+    const PLATFORMS = [
+      { name: "Wii", label: "Wii" },
+      { name: "Switch", label: "Switch" },
+      { name: "PlayStation 5", label: "PS5" },
+      { name: "PlayStation 4", label: "PS4" },
+      { name: "PlayStation 3", label: "PS3" },
+      { name: "PlayStation 2", label: "PS2" },
+      { name: "Xbox Series", label: "Xbox Series" },
+      { name: "Xbox One", label: "Xbox One" },
+      { name: "Xbox 360", label: "Xbox 360" },
+      { name: "GameCube", label: "GameCube" },
+      { name: "Retro Gaming", label: "Retro" },
+      { name: "DS", label: "DS" },
+      { name: "3DS", label: "3DS" },
+      { name: "Gaming Consoles", label: "Consoles" },
+      { name: "Gaming Controllers", label: "Controllers" },
+      { name: "Gaming Accessories", label: "Accessories" }
+    ];
+
+    let currentSystem = "Wii";
+    let allProducts = [];
+    let filteredProducts = [];
+    let activeCategoryIds = new Set();
+    let categoriesList = [];
+    let displayLimit = 40;
+    let html5QrCode = null;
+
+    document.addEventListener("DOMContentLoaded", () => {
+      lucide.createIcons();
+      renderPlatforms();
+      loadSystemData("Wii");
+      setupEvents();
+    });
+
+    function renderPlatforms() {
+      const list = document.getElementById("platformScrollList");
+      list.innerHTML = PLATFORMS.map(p => `
+        <button onclick="selectPlatform('${p.name}')" 
+                class="px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition border ${
+                  p.name === currentSystem
+                    ? 'bg-red-600 text-white border-red-500 shadow-md shadow-red-600/30'
+                    : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800'
+                }" data-sys="${p.name}">
+          ${p.label}
+        </button>
+      `).join("");
+    }
+
+    function selectPlatform(name) {
+      currentSystem = name;
+      document.getElementById("currentSystemNameBadge").innerText = name;
+      renderPlatforms();
+      loadSystemData(name);
+    }
+
+    async function loadSystemData(systemName) {
+      setLoading(true);
+      try {
+        // Step 1: Discover subcategories
+        const catQuery = {
+          requests: [{
+            indexName: INDEX_NAME,
+            filters: `productLineName:"${systemName}" AND boxVisibilityOnWeb=1 AND boxBuyAllowed=1`,
+            facets: ["categoryId"],
+            hitsPerPage: 0,
+            maxValuesPerFacet: 100
+          }]
+        };
+
+        const catRes = await fetch(ALGOLIA_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(catQuery)
+        });
+        const catData = await catRes.json();
+        const catFacets = catData.results[0]?.facets?.categoryId || {};
+        const catIds = Object.keys(catFacets);
+
+        // Fetch products
+        let baseFilter = `productLineName:"${systemName}" AND boxVisibilityOnWeb=1 AND boxBuyAllowed=1`;
+        
+        // Use price brackets if category is large
+        const attrs = [
+          "boxId", "boxName", "cashPriceCalculated", "exchangePriceCalculated", "sellPrice",
+          "categoryFriendlyName", "categoryName", "categoryId", "productLineName", "imageUrls"
+        ];
+
+        const brackets = [
+          "cashPriceCalculated <= 2",
+          "cashPriceCalculated > 2 AND cashPriceCalculated <= 5",
+          "cashPriceCalculated > 5 AND cashPriceCalculated <= 15",
+          "cashPriceCalculated > 15 AND cashPriceCalculated <= 40",
+          "cashPriceCalculated > 40"
+        ];
+
+        const subRequests = brackets.map(b => ({
+          indexName: INDEX_NAME,
+          filters: `${baseFilter} AND ${b}`,
+          attributesToRetrieve: attrs,
+          hitsPerPage: 1000,
+          page: 0
+        }));
+
+        const partRes = await fetch(ALGOLIA_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requests: subRequests })
+        });
+        const partData = await partRes.json();
+        const seen = new Set();
+        const hits = [];
+        for (const res of partData.results) {
+          for (const h of (res.hits || [])) {
+            if (!seen.has(h.boxId)) {
+              seen.add(h.boxId);
+              hits.push(h);
+            }
+          }
+        }
+
+        allProducts = hits.map(h => {
+          const cash = parseFloat(h.cashPriceCalculated || 0);
+          const voucher = parseFloat(h.exchangePriceCalculated || 0);
+          const sell = parseFloat(h.sellPrice || 0);
+          const bonus = Math.round((voucher - cash) * 100) / 100;
+          return {
+            id: h.boxId,
+            name: h.boxName,
+            category: h.categoryFriendlyName || h.categoryName || "Other",
+            categoryId: String(h.categoryId),
+            cash: cash,
+            voucher: voucher,
+            sell: sell,
+            bonus: bonus,
+            image: h.imageUrls?.small || h.imageUrls?.medium || "",
+            url: `https://au.webuy.com/sell/product-detail?id=${h.boxId}`
+          };
+        });
+
+        setupSubcategoryPills(allProducts);
+        applyFilters();
+      } catch (e) {
+        console.error("Error loading system:", e);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function setupSubcategoryPills(products) {
+      const catMap = {};
+      products.forEach(p => {
+        if (!catMap[p.categoryId]) {
+          catMap[p.categoryId] = { id: p.categoryId, name: p.category, count: 0 };
+        }
+        catMap[p.categoryId].count++;
+      });
+      categoriesList = Object.values(catMap).sort((a, b) => b.count - a.count);
+      activeCategoryIds = new Set(categoriesList.map(c => c.id));
+
+      const sec = document.getElementById("subcatSection");
+      const list = document.getElementById("subcatPills");
+
+      if (categoriesList.length <= 1) {
+        sec.classList.add("hidden");
+        return;
+      }
+      sec.classList.remove("hidden");
+
+      list.innerHTML = `
+        <button onclick="toggleAllSubcats(true)" class="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-800 text-slate-300 border border-slate-700">All (${products.length})</button>
+      ` + categoriesList.map(c => `
+        <button onclick="toggleCategory('${c.id}')" 
+                class="subcat-btn px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition ${
+                  activeCategoryIds.has(c.id) 
+                    ? 'bg-slate-800 text-white border-slate-600' 
+                    : 'bg-slate-950 text-slate-500 border-slate-900 opacity-60'
+                }" data-cid="${c.id}">
+          ${c.name} (${c.count})
+        </button>
+      `).join("");
+    }
+
+    function toggleCategory(cid) {
+      if (activeCategoryIds.has(cid)) {
+        activeCategoryIds.delete(cid);
+      } else {
+        activeCategoryIds.add(cid);
+      }
+      document.querySelectorAll(".subcat-btn").forEach(btn => {
+        const id = btn.getAttribute("data-cid");
+        if (activeCategoryIds.has(id)) {
+          btn.className = "subcat-btn px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition bg-slate-800 text-white border-slate-600";
+        } else {
+          btn.className = "subcat-btn px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition bg-slate-950 text-slate-500 border-slate-900 opacity-60";
+        }
+      });
+      applyFilters();
+    }
+
+    function toggleAllSubcats(selectAll) {
+      if (selectAll) {
+        activeCategoryIds = new Set(categoriesList.map(c => c.id));
+      } else {
+        activeCategoryIds.clear();
+      }
+      document.querySelectorAll(".subcat-btn").forEach(btn => {
+        btn.className = selectAll
+          ? "subcat-btn px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition bg-slate-800 text-white border-slate-600"
+          : "subcat-btn px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition bg-slate-950 text-slate-500 border-slate-900 opacity-60";
+      });
+      applyFilters();
+    }
+
+    function applyFilters() {
+      const q = document.getElementById("searchInput").value.toLowerCase().trim();
+      const minCash = parseFloat(document.getElementById("minCashSelector").value || 0);
+      const sort = document.getElementById("sortSelector").value;
+
+      filteredProducts = allProducts.filter(p => {
+        if (activeCategoryIds.size > 0 && !activeCategoryIds.has(p.categoryId)) return false;
+        if (minCash > 0 && p.cash < minCash) return false;
+        if (q) {
+          const matchName = p.name.toLowerCase().includes(q);
+          const matchCat = p.category.toLowerCase().includes(q);
+          const matchId = p.id.toLowerCase().includes(q);
+          if (!matchName && !matchCat && !matchId) return false;
+        }
+        return true;
+      });
+
+      // Sort
+      filteredProducts.sort((a, b) => {
+        if (sort === "cash_desc") return b.cash - a.cash;
+        if (sort === "voucher_desc") return b.voucher - a.voucher;
+        if (sort === "bonus_desc") return b.bonus - a.bonus;
+        if (sort === "name_asc") return a.name.localeCompare(b.name);
+        return b.cash - a.cash;
+      });
+
+      // Update metrics
+      document.getElementById("statItemCount").innerText = filteredProducts.length.toLocaleString();
+      const topCash = filteredProducts.length > 0 ? Math.max(...filteredProducts.map(p => p.cash)) : 0;
+      const topTrade = filteredProducts.length > 0 ? Math.max(...filteredProducts.map(p => p.voucher)) : 0;
+      document.getElementById("statTopCash").innerText = `$${topCash.toFixed(0)}`;
+      document.getElementById("statTopTrade").innerText = `$${topTrade.toFixed(0)}`;
+
+      displayLimit = 40;
+      renderCards();
+    }
+
+    function renderCards() {
+      const list = document.getElementById("productsList");
+      const loadMoreBtn = document.getElementById("btnLoadMore");
+      const askingPrice = parseFloat(document.getElementById("shopAskingPrice").value || 0);
+
+      const toShow = filteredProducts.slice(0, displayLimit);
+
+      if (toShow.length === 0) {
+        list.innerHTML = `
+          <div class="py-12 text-center text-slate-500 text-xs">
+            No products found matching your search.
+          </div>
+        `;
+        loadMoreBtn.parentElement.classList.add("hidden");
+        return;
+      }
+
+      list.innerHTML = toShow.map(p => {
+        let profitHtml = "";
+        if (askingPrice > 0) {
+          const cashProfit = p.cash - askingPrice;
+          const tradeProfit = p.voucher - askingPrice;
+          const cashColor = cashProfit >= 0 ? "text-emerald-400" : "text-rose-400";
+          const tradeColor = tradeProfit >= 0 ? "text-blue-400" : "text-rose-400";
+
+          profitHtml = `
+            <div class="mt-2 pt-2 border-t border-slate-800/80 grid grid-cols-2 gap-2 text-[11px]">
+              <div class="bg-slate-950/60 rounded-lg p-1.5 text-center">
+                <span class="text-slate-400">Cash Profit:</span>
+                <span class="font-bold ${cashColor} ml-1">${cashProfit >= 0 ? '+' : ''}$${cashProfit.toFixed(2)}</span>
+              </div>
+              <div class="bg-slate-950/60 rounded-lg p-1.5 text-center">
+                <span class="text-slate-400">Trade Profit:</span>
+                <span class="font-bold ${tradeColor} ml-1">${tradeProfit >= 0 ? '+' : ''}$${tradeProfit.toFixed(2)}</span>
+              </div>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="bg-slate-900 border border-slate-800/90 rounded-2xl p-3.5 shadow-sm transition hover:border-slate-700">
+            <div class="flex items-start gap-3">
+              <!-- Thumbnail -->
+              ${p.image 
+                ? `<img src="${p.image}" alt="" class="w-14 h-14 object-contain rounded-xl bg-white/5 border border-slate-800 p-1 shrink-0" onerror="this.style.display='none'">` 
+                : `<div class="w-14 h-14 rounded-xl bg-slate-800/80 border border-slate-800 flex items-center justify-center text-slate-500 shrink-0"><i data-lucide="package" class="w-6 h-6"></i></div>`}
+              
+              <!-- Content -->
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5 flex-wrap mb-1">
+                  <span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
+                    ${escapeHtml(p.category)}
+                  </span>
+                  <span class="text-[10px] text-slate-500 font-mono">ID: ${p.id}</span>
+                </div>
+                <h4 class="text-xs font-bold text-white leading-snug line-clamp-2">
+                  ${escapeHtml(p.name)}
+                </h4>
+
+                <!-- Price Row -->
+                <div class="flex items-center gap-2 mt-2 flex-wrap">
+                  <!-- Cash -->
+                  <div class="bg-emerald-950/40 border border-emerald-800/50 text-emerald-400 px-2.5 py-1 rounded-xl flex items-center gap-1.5">
+                    <span class="text-[10px] font-semibold uppercase text-emerald-500">Cash</span>
+                    <span class="font-extrabold text-sm">$${p.cash.toFixed(2)}</span>
+                  </div>
+
+                  <!-- Trade Voucher -->
+                  <div class="bg-blue-950/40 border border-blue-800/50 text-blue-400 px-2.5 py-1 rounded-xl flex items-center gap-1.5">
+                    <span class="text-[10px] font-semibold uppercase text-blue-500">Trade</span>
+                    <span class="font-extrabold text-sm">$${p.voucher.toFixed(2)}</span>
+                  </div>
+
+                  <!-- Sell Price -->
+                  <div class="text-[11px] text-slate-400 ml-auto flex items-center gap-1">
+                    <span>CeX Sells:</span>
+                    <span class="font-semibold text-slate-300">$${p.sell.toFixed(2)}</span>
+                  </div>
+                </div>
+
+                ${profitHtml}
+
+                <!-- Action Button -->
+                <div class="mt-2.5 flex items-center justify-between gap-2">
+                  <span class="text-[10px] text-purple-400 font-medium">
+                    +$${p.bonus.toFixed(2)} trade bonus
+                  </span>
+                  <a href="${p.url}" target="_blank" 
+                     class="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-[11px] transition">
+                    <span>Sell on CeX</span>
+                    <i data-lucide="external-link" class="w-3 h-3"></i>
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      lucide.createIcons();
+
+      if (displayLimit >= filteredProducts.length) {
+        loadMoreBtn.parentElement.classList.add("hidden");
+      } else {
+        loadMoreBtn.parentElement.classList.remove("hidden");
+        loadMoreBtn.innerText = `Load More (${filteredProducts.length - displayLimit} remaining)`;
+      }
+    }
+
+    function setupEvents() {
+      const search = document.getElementById("searchInput");
+      const clearBtn = document.getElementById("btnClearSearch");
+
+      search.addEventListener("input", () => {
+        clearBtn.classList.toggle("hidden", !search.value);
+        applyFilters();
+      });
+
+      clearBtn.addEventListener("click", () => {
+        search.value = "";
+        clearBtn.classList.add("hidden");
+        applyFilters();
+      });
+
+      document.getElementById("shopAskingPrice").addEventListener("input", renderCards);
+      document.getElementById("sortSelector").addEventListener("change", applyFilters);
+      document.getElementById("minCashSelector").addEventListener("change", applyFilters);
+
+      document.getElementById("btnLoadMore").addEventListener("click", () => {
+        displayLimit += 40;
+        renderCards();
+      });
+
+      // Scanner Controls
+      document.getElementById("btnOpenScanner").addEventListener("click", startBarcodeScanner);
+      document.getElementById("btnCloseScanner").addEventListener("click", stopBarcodeScanner);
+      document.getElementById("btnManualBarcodeSearch").addEventListener("click", handleManualBarcode);
+      document.getElementById("manualBarcodeInput").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") handleManualBarcode();
+      });
+    }
+
+    // Barcode Scanner
+    async function startBarcodeScanner() {
+      const modal = document.getElementById("scannerModal");
+      modal.classList.remove("hidden");
+
+      if (!html5QrCode) {
+        html5QrCode = new Html5Qrcode("reader");
+      }
+
+      const config = {
+        fps: 15,
+        qrbox: { width: 280, height: 160 },
+        aspectRatio: 1.5
+      };
+
+      try {
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          config,
+          (decodedText) => {
+            // Success callback
+            onBarcodeFound(decodedText);
+          },
+          (errorMessage) => {
+            // scanning frame error (ignore)
+          }
+        );
+      } catch (err) {
+        console.warn("Camera start error:", err);
+      }
+    }
+
+    function stopBarcodeScanner() {
+      const modal = document.getElementById("scannerModal");
+      modal.classList.add("hidden");
+      if (html5QrCode && html5QrCode.isScanning) {
+        html5QrCode.stop().catch(console.error);
+      }
+    }
+
+    async function onBarcodeFound(code) {
+      stopBarcodeScanner();
+      // Beep or vibrate if supported
+      if (navigator.vibrate) navigator.vibrate(200);
+
+      document.getElementById("searchInput").value = code;
+      document.getElementById("btnClearSearch").classList.remove("hidden");
+
+      // Check if product is already in local list
+      const found = allProducts.find(p => p.id === code || p.id.endsWith(code));
+      if (found) {
+        applyFilters();
+        return;
+      }
+
+      // If not in local list, search CeX Algolia by barcode directly
+      setLoading(true);
+      try {
+        const queryRes = await fetch(ALGOLIA_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            requests: [{
+              indexName: INDEX_NAME,
+              query: code,
+              hitsPerPage: 10
+            }]
+          })
+        });
+        const resData = await queryRes.json();
+        const hits = resData.results[0]?.hits || [];
+        if (hits.length > 0) {
+          const newProds = hits.map(h => {
+            const cash = parseFloat(h.cashPriceCalculated || 0);
+            const voucher = parseFloat(h.exchangePriceCalculated || 0);
+            const sell = parseFloat(h.sellPrice || 0);
+            return {
+              id: h.boxId,
+              name: h.boxName,
+              category: h.categoryFriendlyName || h.categoryName || "Other",
+              categoryId: String(h.categoryId),
+              cash: cash,
+              voucher: voucher,
+              sell: sell,
+              bonus: Math.round((voucher - cash) * 100) / 100,
+              image: h.imageUrls?.small || h.imageUrls?.medium || "",
+              url: `https://au.webuy.com/sell/product-detail?id=${h.boxId}`
+            };
+          });
+          allProducts.unshift(...newProds);
+          applyFilters();
+        } else {
+          alert("Barcode " + code + " not found in CeX database.");
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function handleManualBarcode() {
+      const code = document.getElementById("manualBarcodeInput").value.trim();
+      if (code) {
+        onBarcodeFound(code);
+      }
+    }
+
+    function toggleExportMenu() {
+      document.getElementById("exportMenu").classList.toggle("hidden");
+    }
+
+    function exportToExcelFile() {
+      toggleExportMenu();
+      if (filteredProducts.length === 0) return alert("No products to export!");
+
+      const wsData = [
+        ["Product Name", "Cash Value ($)", "Voucher Value ($)", "CeX Sell Price ($)", "Voucher Bonus ($)", "Category", "Barcode / ID", "CeX Sell Link"]
+      ];
+      filteredProducts.forEach(p => {
+        wsData.push([p.name, p.cash, p.voucher, p.sell, p.bonus, p.category, p.id, p.url]);
+      });
+
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      XLSX.utils.book_append_sheet(wb, ws, "CeX Products");
+      XLSX.writeFile(wb, `cex_${currentSystem.toLowerCase().replace(/\\s+/g, '_')}_products.xlsx`);
+    }
+
+    function exportToCsvFile() {
+      toggleExportMenu();
+      if (filteredProducts.length === 0) return alert("No products to export!");
+
+      let csv = "Product Name,Cash Value ($),Voucher Value ($),CeX Sell Price ($),Voucher Bonus ($),Category,Barcode / ID,CeX Sell Link\n";
+      filteredProducts.forEach(p => {
+        csv += `"${p.name.replace(/"/g, '""')}",${p.cash.toFixed(2)},${p.voucher.toFixed(2)},${p.sell.toFixed(2)},${p.bonus.toFixed(2)},"${p.category.replace(/"/g, '""')}","${p.id}","${p.url}"\n`;
+      });
+
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.setAttribute("download", `cex_${currentSystem.toLowerCase().replace(/\\s+/g, '_')}_products.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    function setLoading(isLoading) {
+      document.getElementById("loadingBox").classList.toggle("hidden", !isLoading);
+      document.getElementById("productsList").classList.toggle("opacity-40", isLoading);
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+  </script>
+</body>
+</html>

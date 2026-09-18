@@ -1,0 +1,21 @@
+{
+  "name": "CeX Value Scanner",
+  "short_name": "CeX Scanner",
+  "description": "Scan barcodes and look up CeX Australia cash, trade voucher values, and profit margins on the go.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#dc2626",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
