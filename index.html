@@ -346,12 +346,25 @@
           { name: "Photography", label: "Cameras & Photography", productLine: "Photography" },
           { name: "Headphones", label: "Portable Audio & Headphones", productLine: "Portable Entertainment" }
         ]
+      },
+      {
+        group: "Movies, Books & Media",
+        items: [
+          { name: "Blu-Ray & 4K", label: "Blu-Ray & 4K Ultra HD", categoryIds: ["792", "1078", "932", "991", "843", "544", "379", "192"] },
+          { name: "DVDs", label: "DVD Movies & TV (inc. Anime)", categoryIds: ["746", "40", "710", "747", "681", "709", "749"] },
+          { name: "4K UHD", label: "4K Ultra HD Blu-Ray", categoryIds: ["1078"] },
+          { name: "Anime Media", label: "Anime DVDs & Blu-Ray", categoryIds: ["746", "991"] },
+          { name: "Books", label: "Books & Literature", categoryIds: ["954"], allowUnbuyable: true }
+        ]
       }
     ];
 
     // Popular Quick Pills for horizontal bar
     const QUICK_PILLS = [
       { name: "ALL", label: "🌐 All Systems" },
+      { name: "Blu-Ray & 4K", label: "🎬 Blu-Ray & 4K" },
+      { name: "DVDs", label: "📀 DVDs" },
+      { name: "Books", label: "📚 Books" },
       { name: "Wii", label: "Wii" },
       { name: "Switch", label: "Switch" },
       { name: "PlayStation 5", label: "PS5" },
@@ -532,66 +545,76 @@
     async function loadSystemData(sys) {
       setLoading(true, `Loading ${sys.label || sys.name}...`);
       try {
-        let baseFilter = "boxVisibilityOnWeb=1 AND boxBuyAllowed=1";
-        if (sys.categoryIds && sys.categoryIds.length > 0) {
-          const orParts = sys.categoryIds.map(cid => `categoryId:${cid}`).join(" OR ");
-          baseFilter += ` AND (${orParts})`;
-        } else if (sys.productLine) {
-          baseFilter += ` AND productLineName:"${sys.productLine}"`;
-        }
+        const isUnbuyable = !!sys.allowUnbuyable;
+        const baseFilter = isUnbuyable ? "boxSaleAllowed=1" : "boxVisibilityOnWeb=1 AND boxBuyAllowed=1";
 
         const attrs = [
           "boxId", "boxName", "cashPriceCalculated", "exchangePriceCalculated", "sellPrice",
           "categoryFriendlyName", "categoryName", "categoryId", "productLineName", "imageUrls"
         ];
 
-        // Check total hits
-        const countRes = await fetch(ALGOLIA_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            requests: [{ indexName: INDEX_NAME, filters: baseFilter, hitsPerPage: 0 }]
-          })
-        });
-        const countData = await countRes.json();
-        const totalHits = countData.results[0]?.nbHits || 0;
-
         let hits = [];
-        if (totalHits <= 1000) {
+        const seen = new Set();
+
+        if (sys.categoryIds && sys.categoryIds.length > 0) {
+          // Multi-category groups (e.g. Blu-Ray & 4K, DVDs, Anime, Books)
+          const requests = [];
+          for (const cid of sys.categoryIds) {
+            const catFilter = `${baseFilter} AND categoryId:${cid}`;
+            if (cid === "792") {
+              // High volume: Blu-Ray Movies (~8,900 items)
+              const brackets = [
+                "cashPriceCalculated <= 1",
+                "cashPriceCalculated > 1 AND cashPriceCalculated <= 3",
+                "cashPriceCalculated > 3 AND cashPriceCalculated <= 8",
+                "cashPriceCalculated > 8 AND cashPriceCalculated <= 20",
+                "cashPriceCalculated > 20"
+              ];
+              for (const b of brackets) {
+                requests.push({
+                  indexName: INDEX_NAME,
+                  filters: `${catFilter} AND ${b}`,
+                  attributesToRetrieve: attrs,
+                  hitsPerPage: 1000,
+                  page: 0
+                });
+              }
+            } else if (cid === "746") {
+              // High volume: DVD Anime (~5,300 items)
+              const brackets = [
+                "cashPriceCalculated <= 2",
+                "cashPriceCalculated > 2 AND cashPriceCalculated <= 6",
+                "cashPriceCalculated > 6 AND cashPriceCalculated <= 15",
+                "cashPriceCalculated > 15 AND cashPriceCalculated <= 35",
+                "cashPriceCalculated > 35"
+              ];
+              for (const b of brackets) {
+                requests.push({
+                  indexName: INDEX_NAME,
+                  filters: `${catFilter} AND ${b}`,
+                  attributesToRetrieve: attrs,
+                  hitsPerPage: 1000,
+                  page: 0
+                });
+              }
+            } else {
+              requests.push({
+                indexName: INDEX_NAME,
+                filters: catFilter,
+                attributesToRetrieve: attrs,
+                hitsPerPage: 1000,
+                page: 0
+              });
+            }
+          }
+
           const qRes = await fetch(ALGOLIA_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              requests: [{ indexName: INDEX_NAME, filters: baseFilter, attributesToRetrieve: attrs, hitsPerPage: 1000, page: 0 }]
-            })
+            body: JSON.stringify({ requests })
           });
           const qData = await qRes.json();
-          hits = qData.results[0]?.hits || [];
-        } else {
-          // Partition by price brackets
-          const brackets = [
-            "cashPriceCalculated <= 2",
-            "cashPriceCalculated > 2 AND cashPriceCalculated <= 5",
-            "cashPriceCalculated > 5 AND cashPriceCalculated <= 15",
-            "cashPriceCalculated > 15 AND cashPriceCalculated <= 40",
-            "cashPriceCalculated > 40"
-          ];
-          const subRequests = brackets.map(b => ({
-            indexName: INDEX_NAME,
-            filters: `${baseFilter} AND ${b}`,
-            attributesToRetrieve: attrs,
-            hitsPerPage: 1000,
-            page: 0
-          }));
-
-          const partRes = await fetch(ALGOLIA_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ requests: subRequests })
-          });
-          const partData = await partRes.json();
-          const seen = new Set();
-          for (const res of partData.results) {
+          for (const res of (qData.results || [])) {
             for (const h of (res.hits || [])) {
               if (!seen.has(h.boxId)) {
                 seen.add(h.boxId);
@@ -599,10 +622,74 @@
               }
             }
           }
+        } else {
+          let filter = baseFilter;
+          if (sys.productLine) {
+            filter += ` AND productLineName:"${sys.productLine}"`;
+          }
+
+          const countRes = await fetch(ALGOLIA_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requests: [{ indexName: INDEX_NAME, filters: filter, hitsPerPage: 0 }]
+            })
+          });
+          const countData = await countRes.json();
+          const totalHits = countData.results[0]?.nbHits || 0;
+
+          if (totalHits <= 1000) {
+            const qRes = await fetch(ALGOLIA_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                requests: [{ indexName: INDEX_NAME, filters: filter, attributesToRetrieve: attrs, hitsPerPage: 1000, page: 0 }]
+              })
+            });
+            const qData = await qRes.json();
+            hits = qData.results[0]?.hits || [];
+          } else {
+            const priceField = isUnbuyable ? "sellPrice" : "cashPriceCalculated";
+            const brackets = [
+              `${priceField} <= 2`,
+              `${priceField} > 2 AND ${priceField} <= 5`,
+              `${priceField} > 5 AND ${priceField} <= 15`,
+              `${priceField} > 15 AND ${priceField} <= 40`,
+              `${priceField} > 40`
+            ];
+            const subRequests = brackets.map(b => ({
+              indexName: INDEX_NAME,
+              filters: `${filter} AND ${b}`,
+              attributesToRetrieve: attrs,
+              hitsPerPage: 1000,
+              page: 0
+            }));
+
+            const partRes = await fetch(ALGOLIA_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ requests: subRequests })
+            });
+            const partData = await partRes.json();
+            for (const res of (partData.results || [])) {
+              for (const h of (res.hits || [])) {
+                if (!seen.has(h.boxId)) {
+                  seen.add(h.boxId);
+                  hits.push(h);
+                }
+              }
+            }
+          }
         }
 
         allProducts = hits.map(h => formatProduct(h));
         setupSubcategoryPills(allProducts);
+        if (isUnbuyable) {
+          const sortSel = document.getElementById("sortSelector");
+          if (sortSel && sortSel.value === "cash_desc") {
+            sortSel.value = "sell_desc";
+          }
+        }
         applyFilters();
       } catch (e) {
         console.error("Error loading system:", e);
@@ -879,32 +966,50 @@
                   ${escapeHtml(p.name)}
                 </h4>
 
-                <div class="flex items-center gap-2 mt-2 flex-wrap">
-                  <div class="bg-emerald-950/40 border border-emerald-800/50 text-emerald-400 px-2.5 py-1 rounded-xl flex items-center gap-1.5">
-                    <span class="text-[10px] font-semibold uppercase text-emerald-500">Cash</span>
-                    <span class="font-extrabold text-sm">$${p.cash.toFixed(2)}</span>
-                  </div>
+                ${(p.cash > 0 || p.voucher > 0) ? `
+                  <div class="flex items-center gap-2 mt-2 flex-wrap">
+                    <div class="bg-emerald-950/40 border border-emerald-800/50 text-emerald-400 px-2.5 py-1 rounded-xl flex items-center gap-1.5">
+                      <span class="text-[10px] font-semibold uppercase text-emerald-500">Cash</span>
+                      <span class="font-extrabold text-sm">$${p.cash.toFixed(2)}</span>
+                    </div>
 
-                  <div class="bg-blue-950/40 border border-blue-800/50 text-blue-400 px-2.5 py-1 rounded-xl flex items-center gap-1.5">
-                    <span class="text-[10px] font-semibold uppercase text-blue-500">Trade</span>
-                    <span class="font-extrabold text-sm">$${p.voucher.toFixed(2)}</span>
-                  </div>
+                    <div class="bg-blue-950/40 border border-blue-800/50 text-blue-400 px-2.5 py-1 rounded-xl flex items-center gap-1.5">
+                      <span class="text-[10px] font-semibold uppercase text-blue-500">Trade</span>
+                      <span class="font-extrabold text-sm">$${p.voucher.toFixed(2)}</span>
+                    </div>
 
-                  <div class="text-[11px] text-slate-400 ml-auto flex items-center gap-1">
-                    <span>CeX Sells:</span>
-                    <span class="font-semibold text-slate-300">$${p.sell.toFixed(2)}</span>
+                    <div class="text-[11px] text-slate-400 ml-auto flex items-center gap-1">
+                      <span>CeX Sells:</span>
+                      <span class="font-semibold text-slate-300">$${p.sell.toFixed(2)}</span>
+                    </div>
                   </div>
-                </div>
+                ` : `
+                  <div class="flex items-center gap-2 mt-2 flex-wrap">
+                    <span class="text-[10px] font-bold px-2.5 py-1 rounded-xl bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                      CeX Catalog Only (Not Bought)
+                    </span>
+                    <div class="text-[11px] text-slate-400 ml-auto flex items-center gap-1">
+                      <span>CeX Sells:</span>
+                      <span class="font-semibold text-slate-300">$${p.sell.toFixed(2)}</span>
+                    </div>
+                  </div>
+                `}
 
                 ${profitHtml}
 
                 <div class="mt-2.5 flex items-center justify-between gap-2">
-                  <span class="text-[10px] text-purple-400 font-medium">
-                    +$${p.bonus.toFixed(2)} trade bonus
-                  </span>
+                  ${p.bonus > 0 ? `
+                    <span class="text-[10px] text-purple-400 font-medium">
+                      +$${p.bonus.toFixed(2)} trade bonus
+                    </span>
+                  ` : `
+                    <span class="text-[10px] text-slate-500 font-medium">
+                      ${(p.cash === 0 && p.voucher === 0) ? 'Check eBay value below' : ''}
+                    </span>
+                  `}
                   <a href="${p.url}" target="_blank" 
                      class="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-[11px] transition">
-                    <span>Sell on CeX</span>
+                    <span>${(p.cash > 0 || p.voucher > 0) ? 'Sell on CeX' : 'View on CeX'}</span>
                     <i data-lucide="external-link" class="w-3 h-3"></i>
                   </a>
                 </div>

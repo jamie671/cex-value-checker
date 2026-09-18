@@ -88,6 +88,16 @@ SYSTEM_ALIASES = {
     "32x": ("Sega 32X", ["1093"]),
     "mega-cd": ("Sega Mega-CD", ["1097"]),
     "original xbox": ("Xbox (Original)", None),
+    # Movies, Books & Media
+    "dvd": ("DVD Movies & TV (inc. Anime)", ["746", "40", "710", "747", "681", "709", "749"]),
+    "dvds": ("DVD Movies & TV (inc. Anime)", ["746", "40", "710", "747", "681", "709", "749"]),
+    "blu-ray": ("Blu-Ray & 4K Ultra HD", ["792", "1078", "932", "991", "843", "544", "379", "192"]),
+    "bluray": ("Blu-Ray & 4K Ultra HD", ["792", "1078", "932", "991", "843", "544", "379", "192"]),
+    "4k": ("4K Ultra HD Blu-Ray", ["1078"]),
+    "4k uhd": ("4K Ultra HD Blu-Ray", ["1078"]),
+    "anime": ("Anime Media", ["746", "991"]),
+    "books": ("Books & Literature", ["954"]),
+    "book": ("Books & Literature", ["954"]),
 }
 
 
@@ -123,10 +133,16 @@ def get_categories_for_system(system_name: str) -> List[Tuple[str, str, int]]:
     norm = system_name.lower().strip()
     if norm in SYSTEM_ALIASES and SYSTEM_ALIASES[norm][1]:
         clean_name, cat_ids = SYSTEM_ALIASES[norm]
+
+        def cat_filter(cid: str) -> str:
+            if cid == "954":
+                return f"categoryId:{cid} AND boxSaleAllowed=1"
+            return f"categoryId:{cid} AND boxVisibilityOnWeb=1 AND boxBuyAllowed=1"
+
         sub_requests = [
             {
                 "indexName": INDEX_NAME,
-                "filters": f"categoryId:{cid} AND boxVisibilityOnWeb=1 AND boxBuyAllowed=1",
+                "filters": cat_filter(cid),
                 "attributesToRetrieve": ["categoryId", "categoryFriendlyName", "categoryName"],
                 "hitsPerPage": 1,
             }
@@ -138,7 +154,8 @@ def get_categories_for_system(system_name: str) -> List[Tuple[str, str, int]]:
             cnt = sub_res.get("nbHits", 0)
             hits = sub_res.get("hits", [])
             name = hits[0].get("categoryFriendlyName") or hits[0].get("categoryName") if hits else f"Category {cid}"
-            cat_info.append((cid, name, cnt))
+            if cnt > 0:
+                cat_info.append((cid, name, cnt))
         cat_info.sort(key=lambda x: x[2], reverse=True)
         return cat_info
 
@@ -213,9 +230,15 @@ def fetch_category_items(
     system_name: Optional[str] = None,
     query: str = "",
     extra_filter: str = "",
+    allow_unbuyable: bool = False,
 ) -> List[Dict[str, Any]]:
     """Fetch all items for a category or system with automatic price bracket partitioning."""
-    base_filter_parts = ["boxVisibilityOnWeb=1", "boxBuyAllowed=1"]
+    is_unbuyable = allow_unbuyable or (category_id == "954")
+    if is_unbuyable:
+        base_filter_parts = ["boxSaleAllowed=1"]
+    else:
+        base_filter_parts = ["boxVisibilityOnWeb=1", "boxBuyAllowed=1"]
+
     if category_id:
         base_filter_parts.append(f"categoryId:{category_id}")
     if system_name:
@@ -259,12 +282,13 @@ def fetch_category_items(
             items_by_id[hit["boxId"]] = hit
         return list(items_by_id.values())
 
+    price_field = "sellPrice" if is_unbuyable else "cashPriceCalculated"
     brackets = [
-        ("cashPriceCalculated <= 2", "cashPriceCalculated <= 2"),
-        ("cashPriceCalculated > 2 AND cashPriceCalculated <= 5", "cashPriceCalculated > 2 AND cashPriceCalculated <= 5"),
-        ("cashPriceCalculated > 5 AND cashPriceCalculated <= 15", "cashPriceCalculated > 5 AND cashPriceCalculated <= 15"),
-        ("cashPriceCalculated > 15 AND cashPriceCalculated <= 40", "cashPriceCalculated > 15 AND cashPriceCalculated <= 40"),
-        ("cashPriceCalculated > 40", "cashPriceCalculated > 40"),
+        (f"{price_field} <= 2", f"{price_field} <= 2"),
+        (f"{price_field} > 2 AND {price_field} <= 5", f"{price_field} > 2 AND {price_field} <= 5"),
+        (f"{price_field} > 5 AND {price_field} <= 15", f"{price_field} > 5 AND {price_field} <= 15"),
+        (f"{price_field} > 15 AND {price_field} <= 40", f"{price_field} > 15 AND {price_field} <= 40"),
+        (f"{price_field} > 40", f"{price_field} > 40"),
     ]
 
     sub_requests = []
@@ -653,7 +677,7 @@ def main():
     )
 
     parser.add_argument("urls", nargs="*", help="One or more CeX category/search URLs")
-    parser.add_argument("--system", "-s", type=str, help='System / Product line name (e.g. "Wii", "N64", "PS1", "SNES", "Switch", "PS5", "Xbox 360", "Retro Gaming")')
+    parser.add_argument("--system", "-s", type=str, help='System / Product line / Media name (e.g. "Wii", "Switch", "PS5", "N64", "Blu-Ray", "DVD", "Books")')
     parser.add_argument("--categories", "-c", type=str, help="Comma-separated category IDs (e.g. 795,796,797,1109,1119)")
     parser.add_argument("--query", "-q", type=str, default="", help="Optional search keyword filter")
     parser.add_argument("--output", "-o", type=str, default="cex_products", help="Base output filename (without extension)")
@@ -672,10 +696,9 @@ def main():
         print("-" * 54)
         for name, count in systems:
             print(f"{name:<40} {count:>12,}")
-        print("\nSupported Retro Aliases:")
-        print("  N64 / Nintendo 64, PS1 / PlayStation 1, SNES / Super NES, NES,")
-        print("  Game Boy, GBA / Game Boy Advance, Game Boy Color,")
-        print("  Dreamcast, Saturn / Sega Saturn, Mega Drive, Master System, Game Gear")
+        print("\nSupported Aliases:")
+        print("  Retro: N64, PS1, SNES, NES, Game Boy, GBA, Game Boy Color, Dreamcast, Saturn, Mega Drive")
+        print("  Media: Blu-Ray / Bluray, DVD / DVDs, 4K UHD, Anime, Books")
         return
 
     category_product_map: Dict[str, List[Dict[str, Any]]] = {}
