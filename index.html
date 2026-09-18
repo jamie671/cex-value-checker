@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>CeX Value Scanner & Profit Checker</title>
   
-  <!-- Web App Capabilities (iOS / Android) -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CeX Value">
@@ -80,7 +79,7 @@
     <section class="space-y-2.5">
       <div class="relative">
         <i data-lucide="search" class="w-5 h-5 absolute left-3.5 top-3.5 text-slate-400"></i>
-        <input type="text" id="searchInput" placeholder="Search game, console, tech, or barcode..." 
+        <input type="text" id="searchInput" placeholder="Search any product, game, console, tech, or barcode..." 
                class="w-full pl-11 pr-10 py-3 bg-slate-900/90 border border-slate-800 rounded-2xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 transition shadow-inner">
         <button id="btnClearSearch" class="hidden absolute right-3 top-3 p-1 text-slate-400 hover:text-white">
           <i data-lucide="x" class="w-4 h-4"></i>
@@ -106,11 +105,14 @@
       </div>
     </section>
 
-    <!-- Platform Selector Bar (Horizontal Scrollable) -->
+    <!-- Platform Selector Bar with "All Systems" and "Browse 40+ Systems" -->
     <section>
       <div class="flex items-center justify-between text-xs text-slate-400 font-semibold mb-2">
         <span>PLATFORM / SYSTEM</span>
-        <span id="currentSystemNameBadge" class="text-red-400 font-bold">Nintendo Wii</span>
+        <button onclick="openSystemModal()" class="text-red-400 hover:text-red-300 font-bold flex items-center gap-1">
+          <i data-lucide="grid" class="w-3.5 h-3.5"></i>
+          <span>Browse All 40+ Systems</span>
+        </button>
       </div>
       <div class="flex items-center gap-2 overflow-x-auto hide-scrollbar pb-1 -mx-4 px-4" id="platformScrollList">
         <!-- Populated via JS -->
@@ -148,6 +150,7 @@
           <option value="cash_desc">Cash: High to Low</option>
           <option value="voucher_desc">Trade: High to Low</option>
           <option value="bonus_desc">Trade Extra: High to Low</option>
+          <option value="sell_desc">CeX Sell: High to Low</option>
           <option value="name_asc">Name: A to Z</option>
         </select>
       </div>
@@ -165,7 +168,7 @@
     <!-- Loading Indicator -->
     <div id="loadingBox" class="py-12 text-center space-y-2 hidden">
       <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-slate-700 border-t-red-500"></div>
-      <p class="text-xs font-semibold text-slate-400">Loading CeX catalog...</p>
+      <p class="text-xs font-semibold text-slate-400" id="loadingText">Loading CeX catalog...</p>
     </div>
 
     <!-- Product Cards List -->
@@ -182,9 +185,41 @@
 
   </main>
 
+  <!-- Full System Browser Modal -->
+  <div id="systemModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col justify-end sm:justify-center p-0 sm:p-4 hidden">
+    <div class="bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-2xl max-w-2xl w-full mx-auto max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+      <!-- Modal Header -->
+      <div class="p-4 border-b border-slate-800 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <i data-lucide="layers" class="w-5 h-5 text-red-500"></i>
+          <div>
+            <h3 class="text-sm font-bold text-white">Select Any System / Platform</h3>
+            <p class="text-[11px] text-slate-400">Choose from all Nintendo, PlayStation, Xbox, Sega, Retro & Tech systems</p>
+          </div>
+        </div>
+        <button onclick="closeSystemModal()" class="w-8 h-8 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- System Filter Search -->
+      <div class="p-3 border-b border-slate-800/80 bg-slate-950/50">
+        <div class="relative">
+          <i data-lucide="search" class="w-4 h-4 absolute left-3 top-3 text-slate-500"></i>
+          <input type="text" id="systemModalSearch" placeholder="Type system name (e.g. N64, Dreamcast, PS2, iPhone)..." 
+                 class="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-red-500">
+        </div>
+      </div>
+
+      <!-- Categorized Systems List -->
+      <div class="flex-1 overflow-y-auto p-4 space-y-5" id="systemModalContent">
+        <!-- Rendered via JS -->
+      </div>
+    </div>
+  </div>
+
   <!-- Barcode Scanner Modal -->
   <div id="scannerModal" class="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col justify-between p-4 hidden">
-    <!-- Modal Header -->
     <div class="flex items-center justify-between text-white pt-2">
       <div class="flex items-center gap-2">
         <i data-lucide="scan-barcode" class="w-5 h-5 text-red-500"></i>
@@ -195,17 +230,13 @@
       </button>
     </div>
 
-    <!-- Viewfinder Box -->
     <div class="flex-1 flex flex-col items-center justify-center max-w-sm mx-auto w-full my-4">
-      <div id="reader" class="w-full bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative">
-        <!-- html5-qrcode camera attaches here -->
-      </div>
+      <div id="reader" class="w-full bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative"></div>
       <p class="text-xs text-slate-400 mt-3 text-center">
         Point phone camera at the barcode on the back of the case.
       </p>
     </div>
 
-    <!-- Manual Barcode Input Fallback -->
     <div class="max-w-sm mx-auto w-full pb-4 space-y-2">
       <div class="flex items-center gap-2">
         <input type="text" id="manualBarcodeInput" placeholder="Or enter barcode numbers..." 
@@ -221,26 +252,117 @@
     const ALGOLIA_URL = "https://search.webuy.io/1/indexes/*/queries?x-algolia-agent=Algolia%20for%20JavaScript%20(5.52.1)%3B%20Search%20(5.52.1)%3B%20Browser&x-algolia-api-key=bf79f2b6699e60a18ae330a1248b452c&x-algolia-application-id=LNNFEEWZVA";
     const INDEX_NAME = "prod_cex_au";
 
-    const PLATFORMS = [
+    // All Systems Defined and Grouped
+    const ALL_SYSTEM_GROUPS = [
+      {
+        group: "All Systems (Global)",
+        items: [
+          { name: "ALL", label: "🌐 All Systems (Global Search)", filter: "" }
+        ]
+      },
+      {
+        group: "Nintendo",
+        items: [
+          { name: "Switch", label: "Nintendo Switch", productLine: "Switch" },
+          { name: "Switch 2", label: "Nintendo Switch 2", productLine: "Switch 2" },
+          { name: "Wii", label: "Nintendo Wii", productLine: "Wii" },
+          { name: "Wii U", label: "Nintendo Wii U", productLine: "Wii U" },
+          { name: "GameCube", label: "Nintendo GameCube", productLine: "GameCube" },
+          { name: "Nintendo 64", label: "Nintendo 64 (N64)", categoryIds: ["1099", "401", "1098"] },
+          { name: "Super NES", label: "Super Nintendo (SNES)", categoryIds: ["1102", "1101", "1100"] },
+          { name: "NES", label: "Nintendo Entertainment (NES)", categoryIds: ["1148", "1147", "1146"] },
+          { name: "3DS", label: "Nintendo 3DS", productLine: "3DS" },
+          { name: "DS", label: "Nintendo DS", productLine: "DS" },
+          { name: "GBA", label: "Game Boy Advance (GBA)", categoryIds: ["1092", "1091", "1090"] },
+          { name: "Game Boy Color", label: "Game Boy Color", categoryIds: ["1089", "1088"] },
+          { name: "Game Boy", label: "Game Boy (Original)", categoryIds: ["1087", "1086", "1085"] }
+        ]
+      },
+      {
+        group: "PlayStation",
+        items: [
+          { name: "PlayStation 5", label: "PlayStation 5 (PS5)", productLine: "PlayStation 5" },
+          { name: "PlayStation 4", label: "PlayStation 4 (PS4)", productLine: "PlayStation 4" },
+          { name: "PlayStation 3", label: "PlayStation 3 (PS3)", productLine: "PlayStation 3" },
+          { name: "PlayStation 2", label: "PlayStation 2 (PS2)", productLine: "PlayStation 2" },
+          { name: "PlayStation 1", label: "PlayStation 1 (PS1)", categoryIds: ["1081", "1080", "1079"] },
+          { name: "PSP", label: "PlayStation Portable (PSP)", productLine: "PSP" },
+          { name: "PS Vita", label: "PlayStation Vita", productLine: "PS Vita" }
+        ]
+      },
+      {
+        group: "Xbox",
+        items: [
+          { name: "Xbox Series", label: "Xbox Series X / S", productLine: "Xbox Series" },
+          { name: "Xbox One", label: "Xbox One", productLine: "Xbox One" },
+          { name: "Xbox 360", label: "Xbox 360", productLine: "Xbox 360" },
+          { name: "Xbox", label: "Xbox (Original)", productLine: "Xbox" }
+        ]
+      },
+      {
+        group: "Sega & Classic Retro",
+        items: [
+          { name: "Dreamcast", label: "Sega Dreamcast", categoryIds: ["51", "50", "1139"] },
+          { name: "Sega Saturn", label: "Sega Saturn", categoryIds: ["1151", "1150", "1149"] },
+          { name: "Mega Drive", label: "Sega Mega Drive / Genesis", categoryIds: ["1096", "1095", "1094"] },
+          { name: "Master System", label: "Sega Master System", categoryIds: ["1145", "1144", "1143"] },
+          { name: "Game Gear", label: "Sega Game Gear", categoryIds: ["1142", "1141", "1140"] },
+          { name: "Mega 32X", label: "Sega 32X", categoryIds: ["1093"] },
+          { name: "Mega-CD", label: "Sega Mega-CD", categoryIds: ["1097"] },
+          { name: "Retro Gaming", label: "All Retro Gaming Combined", productLine: "Retro Gaming" }
+        ]
+      },
+      {
+        group: "PC & Handheld Gaming",
+        items: [
+          { name: "Handheld Gaming PCs", label: "Steam Deck & Handheld PCs", productLine: "Handheld Gaming PCs" },
+          { name: "PC Gaming", label: "PC Gaming (Software & Gear)", productLine: "PC Gaming" }
+        ]
+      },
+      {
+        group: "Hardware & Gear",
+        items: [
+          { name: "Gaming Consoles", label: "All Consoles", productLine: "Gaming Consoles" },
+          { name: "Gaming Controllers", label: "All Controllers", productLine: "Gaming Controllers" },
+          { name: "Gaming Accessories", label: "All Accessories", productLine: "Gaming Accessories" }
+        ]
+      },
+      {
+        group: "Phones, Tablets & Tech",
+        items: [
+          { name: "Smartphones", label: "Smartphones (iPhones, Samsung)", productLine: "Smartphones" },
+          { name: "Tablets", label: "Tablets & iPads", productLine: "Tablets" },
+          { name: "Laptops", label: "Laptops & MacBooks", productLine: "Laptops, Netbooks & Ultra Portables" },
+          { name: "Wearables", label: "Smartwatches & Wearables", productLine: "Wearable Technology" },
+          { name: "Photography", label: "Cameras & Photography", productLine: "Photography" },
+          { name: "Headphones", label: "Portable Audio & Headphones", productLine: "Portable Entertainment" }
+        ]
+      }
+    ];
+
+    // Popular Quick Pills for horizontal bar
+    const QUICK_PILLS = [
+      { name: "ALL", label: "🌐 All Systems" },
       { name: "Wii", label: "Wii" },
       { name: "Switch", label: "Switch" },
       { name: "PlayStation 5", label: "PS5" },
       { name: "PlayStation 4", label: "PS4" },
       { name: "PlayStation 3", label: "PS3" },
       { name: "PlayStation 2", label: "PS2" },
+      { name: "PlayStation 1", label: "PS1" },
       { name: "Xbox Series", label: "Xbox Series" },
-      { name: "Xbox One", label: "Xbox One" },
       { name: "Xbox 360", label: "Xbox 360" },
       { name: "GameCube", label: "GameCube" },
-      { name: "Retro Gaming", label: "Retro" },
-      { name: "DS", label: "DS" },
-      { name: "3DS", label: "3DS" },
-      { name: "Gaming Consoles", label: "Consoles" },
-      { name: "Gaming Controllers", label: "Controllers" },
-      { name: "Gaming Accessories", label: "Accessories" }
+      { name: "Nintendo 64", label: "N64" },
+      { name: "Super NES", label: "SNES" },
+      { name: "Game Boy", label: "Game Boy" },
+      { name: "GBA", label: "GBA" },
+      { name: "Dreamcast", label: "Dreamcast" },
+      { name: "Retro Gaming", label: "All Retro" },
+      { name: "Handheld Gaming PCs", label: "Steam Deck / Handhelds" }
     ];
 
-    let currentSystem = "Wii";
+    let currentSystemObj = QUICK_PILLS[1]; // default Wii
     let allProducts = [];
     let filteredProducts = [];
     let activeCategoryIds = new Set();
@@ -250,116 +372,211 @@
 
     document.addEventListener("DOMContentLoaded", () => {
       lucide.createIcons();
-      renderPlatforms();
-      loadSystemData("Wii");
+      renderQuickPills();
+      renderSystemModal();
+      selectSystem(QUICK_PILLS[1]); // Wii
       setupEvents();
     });
 
-    function renderPlatforms() {
+    function findSystemDef(name) {
+      for (const grp of ALL_SYSTEM_GROUPS) {
+        for (const itm of grp.items) {
+          if (itm.name === name) return itm;
+        }
+      }
+      return { name: name, label: name, productLine: name };
+    }
+
+    function renderQuickPills() {
       const list = document.getElementById("platformScrollList");
-      list.innerHTML = PLATFORMS.map(p => `
-        <button onclick="selectPlatform('${p.name}')" 
-                class="px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition border ${
-                  p.name === currentSystem
+      list.innerHTML = QUICK_PILLS.map(p => `
+        <button onclick="selectSystemByName('${p.name}')" 
+                class="px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition border ${
+                  p.name === currentSystemObj.name
                     ? 'bg-red-600 text-white border-red-500 shadow-md shadow-red-600/30'
                     : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-800'
                 }" data-sys="${p.name}">
           ${p.label}
         </button>
+      `).join("") + `
+        <button onclick="openSystemModal()" 
+                class="px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap bg-slate-800 hover:bg-slate-700 text-red-400 border border-slate-700 flex items-center gap-1">
+          <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+          <span>More (40+)</span>
+        </button>
+      `;
+      lucide.createIcons();
+    }
+
+    function selectSystemByName(name) {
+      const sys = findSystemDef(name);
+      selectSystem(sys);
+    }
+
+    function selectSystem(sys) {
+      currentSystemObj = sys;
+      document.getElementById("currentSystemNameBadge").innerText = sys.label || sys.name;
+      renderQuickPills();
+      closeSystemModal();
+
+      if (sys.name === "ALL") {
+        loadGlobalSearch();
+      } else {
+        loadSystemData(sys);
+      }
+    }
+
+    function renderSystemModal() {
+      const content = document.getElementById("systemModalContent");
+      content.innerHTML = ALL_SYSTEM_GROUPS.map(grp => `
+        <div>
+          <h4 class="text-xs font-extrabold uppercase text-slate-400 tracking-wider mb-2 flex items-center gap-1.5">
+            <span>${grp.group}</span>
+          </h4>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            ${grp.items.map(itm => `
+              <button onclick="selectSystemByName('${itm.name}')" 
+                      class="sys-modal-item text-left p-2.5 rounded-xl bg-slate-950/70 hover:bg-slate-800/80 border border-slate-800/80 hover:border-slate-700 transition flex items-center justify-between"
+                      data-label="${itm.label.toLowerCase()} ${itm.name.toLowerCase()}">
+                <span class="text-xs font-bold text-slate-200">${itm.label}</span>
+                <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-slate-500"></i>
+              </button>
+            `).join("")}
+          </div>
+        </div>
       `).join("");
-    }
+      lucide.createIcons();
 
-    function selectPlatform(name) {
-      currentSystem = name;
-      document.getElementById("currentSystemNameBadge").innerText = name;
-      renderPlatforms();
-      loadSystemData(name);
-    }
-
-    async function loadSystemData(systemName) {
-      setLoading(true);
-      try {
-        // Step 1: Discover subcategories
-        const catQuery = {
-          requests: [{
-            indexName: INDEX_NAME,
-            filters: `productLineName:"${systemName}" AND boxVisibilityOnWeb=1 AND boxBuyAllowed=1`,
-            facets: ["categoryId"],
-            hitsPerPage: 0,
-            maxValuesPerFacet: 100
-          }]
-        };
-
-        const catRes = await fetch(ALGOLIA_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(catQuery)
+      document.getElementById("systemModalSearch").addEventListener("input", (e) => {
+        const val = e.target.value.toLowerCase().trim();
+        document.querySelectorAll(".sys-modal-item").forEach(el => {
+          const match = el.getAttribute("data-label").includes(val);
+          el.style.display = match ? "flex" : "none";
         });
-        const catData = await catRes.json();
-        const catFacets = catData.results[0]?.facets?.categoryId || {};
-        const catIds = Object.keys(catFacets);
+      });
+    }
 
-        // Fetch products
-        let baseFilter = `productLineName:"${systemName}" AND boxVisibilityOnWeb=1 AND boxBuyAllowed=1`;
-        
-        // Use price brackets if category is large
+    function openSystemModal() {
+      document.getElementById("systemModal").classList.remove("hidden");
+      document.getElementById("systemModalSearch").focus();
+    }
+
+    function closeSystemModal() {
+      document.getElementById("systemModal").classList.add("hidden");
+    }
+
+    async function loadGlobalSearch(customQuery = "") {
+      setLoading(true, "Searching across ALL CeX systems...");
+      document.getElementById("subcatSection").classList.add("hidden");
+
+      try {
+        const q = customQuery || document.getElementById("searchInput").value.trim();
+        const baseFilter = "boxVisibilityOnWeb=1 AND boxBuyAllowed=1";
         const attrs = [
           "boxId", "boxName", "cashPriceCalculated", "exchangePriceCalculated", "sellPrice",
           "categoryFriendlyName", "categoryName", "categoryId", "productLineName", "imageUrls"
         ];
 
-        const brackets = [
-          "cashPriceCalculated <= 2",
-          "cashPriceCalculated > 2 AND cashPriceCalculated <= 5",
-          "cashPriceCalculated > 5 AND cashPriceCalculated <= 15",
-          "cashPriceCalculated > 15 AND cashPriceCalculated <= 40",
-          "cashPriceCalculated > 40"
-        ];
-
-        const subRequests = brackets.map(b => ({
-          indexName: INDEX_NAME,
-          filters: `${baseFilter} AND ${b}`,
-          attributesToRetrieve: attrs,
-          hitsPerPage: 1000,
-          page: 0
-        }));
-
-        const partRes = await fetch(ALGOLIA_URL, {
+        const res = await fetch(ALGOLIA_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ requests: subRequests })
+          body: JSON.stringify({
+            requests: [{
+              indexName: INDEX_NAME,
+              filters: baseFilter,
+              query: q,
+              attributesToRetrieve: attrs,
+              hitsPerPage: 100,
+              page: 0
+            }]
+          })
         });
-        const partData = await partRes.json();
-        const seen = new Set();
-        const hits = [];
-        for (const res of partData.results) {
-          for (const h of (res.hits || [])) {
-            if (!seen.has(h.boxId)) {
-              seen.add(h.boxId);
-              hits.push(h);
+        const data = await res.json();
+        const hits = data.results[0]?.hits || [];
+
+        allProducts = hits.map(h => formatProduct(h));
+        activeCategoryIds.clear();
+        applyFilters();
+      } catch (err) {
+        console.error("Global search error:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    async function loadSystemData(sys) {
+      setLoading(true, `Loading ${sys.label || sys.name}...`);
+      try {
+        let baseFilter = "boxVisibilityOnWeb=1 AND boxBuyAllowed=1";
+        if (sys.categoryIds && sys.categoryIds.length > 0) {
+          const orParts = sys.categoryIds.map(cid => `categoryId:${cid}`).join(" OR ");
+          baseFilter += ` AND (${orParts})`;
+        } else if (sys.productLine) {
+          baseFilter += ` AND productLineName:"${sys.productLine}"`;
+        }
+
+        const attrs = [
+          "boxId", "boxName", "cashPriceCalculated", "exchangePriceCalculated", "sellPrice",
+          "categoryFriendlyName", "categoryName", "categoryId", "productLineName", "imageUrls"
+        ];
+
+        // Check total hits
+        const countRes = await fetch(ALGOLIA_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            requests: [{ indexName: INDEX_NAME, filters: baseFilter, hitsPerPage: 0 }]
+          })
+        });
+        const countData = await countRes.json();
+        const totalHits = countData.results[0]?.nbHits || 0;
+
+        let hits = [];
+        if (totalHits <= 1000) {
+          const qRes = await fetch(ALGOLIA_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requests: [{ indexName: INDEX_NAME, filters: baseFilter, attributesToRetrieve: attrs, hitsPerPage: 1000, page: 0 }]
+            })
+          });
+          const qData = await qRes.json();
+          hits = qData.results[0]?.hits || [];
+        } else {
+          // Partition by price brackets
+          const brackets = [
+            "cashPriceCalculated <= 2",
+            "cashPriceCalculated > 2 AND cashPriceCalculated <= 5",
+            "cashPriceCalculated > 5 AND cashPriceCalculated <= 15",
+            "cashPriceCalculated > 15 AND cashPriceCalculated <= 40",
+            "cashPriceCalculated > 40"
+          ];
+          const subRequests = brackets.map(b => ({
+            indexName: INDEX_NAME,
+            filters: `${baseFilter} AND ${b}`,
+            attributesToRetrieve: attrs,
+            hitsPerPage: 1000,
+            page: 0
+          }));
+
+          const partRes = await fetch(ALGOLIA_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ requests: subRequests })
+          });
+          const partData = await partRes.json();
+          const seen = new Set();
+          for (const res of partData.results) {
+            for (const h of (res.hits || [])) {
+              if (!seen.has(h.boxId)) {
+                seen.add(h.boxId);
+                hits.push(h);
+              }
             }
           }
         }
 
-        allProducts = hits.map(h => {
-          const cash = parseFloat(h.cashPriceCalculated || 0);
-          const voucher = parseFloat(h.exchangePriceCalculated || 0);
-          const sell = parseFloat(h.sellPrice || 0);
-          const bonus = Math.round((voucher - cash) * 100) / 100;
-          return {
-            id: h.boxId,
-            name: h.boxName,
-            category: h.categoryFriendlyName || h.categoryName || "Other",
-            categoryId: String(h.categoryId),
-            cash: cash,
-            voucher: voucher,
-            sell: sell,
-            bonus: bonus,
-            image: h.imageUrls?.small || h.imageUrls?.medium || "",
-            url: `https://au.webuy.com/sell/product-detail?id=${h.boxId}`
-          };
-        });
-
+        allProducts = hits.map(h => formatProduct(h));
         setupSubcategoryPills(allProducts);
         applyFilters();
       } catch (e) {
@@ -367,6 +584,25 @@
       } finally {
         setLoading(false);
       }
+    }
+
+    function formatProduct(h) {
+      const cash = parseFloat(h.cashPriceCalculated || 0);
+      const voucher = parseFloat(h.exchangePriceCalculated || 0);
+      const sell = parseFloat(h.sellPrice || 0);
+      const bonus = Math.round((voucher - cash) * 100) / 100;
+      return {
+        id: h.boxId,
+        name: h.boxName,
+        category: h.categoryFriendlyName || h.categoryName || "Other",
+        categoryId: String(h.categoryId),
+        cash: cash,
+        voucher: voucher,
+        sell: sell,
+        bonus: bonus,
+        image: h.imageUrls?.small || h.imageUrls?.medium || "",
+        url: `https://au.webuy.com/sell/product-detail?id=${h.boxId}`
+      };
     }
 
     function setupSubcategoryPills(products) {
@@ -456,11 +692,11 @@
         if (sort === "cash_desc") return b.cash - a.cash;
         if (sort === "voucher_desc") return b.voucher - a.voucher;
         if (sort === "bonus_desc") return b.bonus - a.bonus;
+        if (sort === "sell_desc") return b.sell - a.sell;
         if (sort === "name_asc") return a.name.localeCompare(b.name);
         return b.cash - a.cash;
       });
 
-      // Update metrics
       document.getElementById("statItemCount").innerText = filteredProducts.length.toLocaleString();
       const topCash = filteredProducts.length > 0 ? Math.max(...filteredProducts.map(p => p.cash)) : 0;
       const topTrade = filteredProducts.length > 0 ? Math.max(...filteredProducts.map(p => p.voucher)) : 0;
@@ -475,13 +711,19 @@
       const list = document.getElementById("productsList");
       const loadMoreBtn = document.getElementById("btnLoadMore");
       const askingPrice = parseFloat(document.getElementById("shopAskingPrice").value || 0);
+      const q = document.getElementById("searchInput").value.trim();
 
       const toShow = filteredProducts.slice(0, displayLimit);
 
       if (toShow.length === 0) {
         list.innerHTML = `
-          <div class="py-12 text-center text-slate-500 text-xs">
-            No products found matching your search.
+          <div class="py-12 text-center text-slate-500 text-xs space-y-3">
+            <p>No products found in <b>${currentSystemObj.label || currentSystemObj.name}</b>.</p>
+            ${currentSystemObj.name !== "ALL" && q ? `
+              <button onclick="selectSystemByName('ALL')" class="px-4 py-2 bg-red-600 text-white rounded-xl text-xs font-bold shadow-md hover:bg-red-500 transition">
+                Search "${escapeHtml(q)}" Across ALL Systems
+              </button>
+            ` : ''}
           </div>
         `;
         loadMoreBtn.parentElement.classList.add("hidden");
@@ -513,12 +755,10 @@
         return `
           <div class="bg-slate-900 border border-slate-800/90 rounded-2xl p-3.5 shadow-sm transition hover:border-slate-700">
             <div class="flex items-start gap-3">
-              <!-- Thumbnail -->
               ${p.image 
                 ? `<img src="${p.image}" alt="" class="w-14 h-14 object-contain rounded-xl bg-white/5 border border-slate-800 p-1 shrink-0" onerror="this.style.display='none'">` 
                 : `<div class="w-14 h-14 rounded-xl bg-slate-800/80 border border-slate-800 flex items-center justify-center text-slate-500 shrink-0"><i data-lucide="package" class="w-6 h-6"></i></div>`}
               
-              <!-- Content -->
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-1.5 flex-wrap mb-1">
                   <span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
@@ -530,21 +770,17 @@
                   ${escapeHtml(p.name)}
                 </h4>
 
-                <!-- Price Row -->
                 <div class="flex items-center gap-2 mt-2 flex-wrap">
-                  <!-- Cash -->
                   <div class="bg-emerald-950/40 border border-emerald-800/50 text-emerald-400 px-2.5 py-1 rounded-xl flex items-center gap-1.5">
                     <span class="text-[10px] font-semibold uppercase text-emerald-500">Cash</span>
                     <span class="font-extrabold text-sm">$${p.cash.toFixed(2)}</span>
                   </div>
 
-                  <!-- Trade Voucher -->
                   <div class="bg-blue-950/40 border border-blue-800/50 text-blue-400 px-2.5 py-1 rounded-xl flex items-center gap-1.5">
                     <span class="text-[10px] font-semibold uppercase text-blue-500">Trade</span>
                     <span class="font-extrabold text-sm">$${p.voucher.toFixed(2)}</span>
                   </div>
 
-                  <!-- Sell Price -->
                   <div class="text-[11px] text-slate-400 ml-auto flex items-center gap-1">
                     <span>CeX Sells:</span>
                     <span class="font-semibold text-slate-300">$${p.sell.toFixed(2)}</span>
@@ -553,7 +789,6 @@
 
                 ${profitHtml}
 
-                <!-- Action Button -->
                 <div class="mt-2.5 flex items-center justify-between gap-2">
                   <span class="text-[10px] text-purple-400 font-medium">
                     +$${p.bonus.toFixed(2)} trade bonus
@@ -586,7 +821,11 @@
 
       search.addEventListener("input", () => {
         clearBtn.classList.toggle("hidden", !search.value);
-        applyFilters();
+        if (currentSystemObj.name === "ALL") {
+          loadGlobalSearch(search.value);
+        } else {
+          applyFilters();
+        }
       });
 
       clearBtn.addEventListener("click", () => {
@@ -633,12 +872,9 @@
           { facingMode: "environment" },
           config,
           (decodedText) => {
-            // Success callback
             onBarcodeFound(decodedText);
           },
-          (errorMessage) => {
-            // scanning frame error (ignore)
-          }
+          (errorMessage) => {}
         );
       } catch (err) {
         console.warn("Camera start error:", err);
@@ -655,21 +891,13 @@
 
     async function onBarcodeFound(code) {
       stopBarcodeScanner();
-      // Beep or vibrate if supported
       if (navigator.vibrate) navigator.vibrate(200);
 
       document.getElementById("searchInput").value = code;
       document.getElementById("btnClearSearch").classList.remove("hidden");
 
-      // Check if product is already in local list
-      const found = allProducts.find(p => p.id === code || p.id.endsWith(code));
-      if (found) {
-        applyFilters();
-        return;
-      }
-
-      // If not in local list, search CeX Algolia by barcode directly
-      setLoading(true);
+      // Search CeX Algolia by barcode across ALL categories
+      setLoading(true, "Searching barcode " + code + " across all systems...");
       try {
         const queryRes = await fetch(ALGOLIA_URL, {
           method: "POST",
@@ -685,24 +913,9 @@
         const resData = await queryRes.json();
         const hits = resData.results[0]?.hits || [];
         if (hits.length > 0) {
-          const newProds = hits.map(h => {
-            const cash = parseFloat(h.cashPriceCalculated || 0);
-            const voucher = parseFloat(h.exchangePriceCalculated || 0);
-            const sell = parseFloat(h.sellPrice || 0);
-            return {
-              id: h.boxId,
-              name: h.boxName,
-              category: h.categoryFriendlyName || h.categoryName || "Other",
-              categoryId: String(h.categoryId),
-              cash: cash,
-              voucher: voucher,
-              sell: sell,
-              bonus: Math.round((voucher - cash) * 100) / 100,
-              image: h.imageUrls?.small || h.imageUrls?.medium || "",
-              url: `https://au.webuy.com/sell/product-detail?id=${h.boxId}`
-            };
-          });
-          allProducts.unshift(...newProds);
+          const newProds = hits.map(h => formatProduct(h));
+          allProducts = newProds;
+          selectSystem(findSystemDef("ALL"));
           applyFilters();
         } else {
           alert("Barcode " + code + " not found in CeX database.");
@@ -716,9 +929,7 @@
 
     function handleManualBarcode() {
       const code = document.getElementById("manualBarcodeInput").value.trim();
-      if (code) {
-        onBarcodeFound(code);
-      }
+      if (code) onBarcodeFound(code);
     }
 
     function toggleExportMenu() {
@@ -739,7 +950,7 @@
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.aoa_to_sheet(wsData);
       XLSX.utils.book_append_sheet(wb, ws, "CeX Products");
-      XLSX.writeFile(wb, `cex_${currentSystem.toLowerCase().replace(/\\s+/g, '_')}_products.xlsx`);
+      XLSX.writeFile(wb, `cex_${currentSystemObj.name.toLowerCase().replace(/\\s+/g, '_')}_products.xlsx`);
     }
 
     function exportToCsvFile() {
@@ -754,14 +965,15 @@
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.setAttribute("download", `cex_${currentSystem.toLowerCase().replace(/\\s+/g, '_')}_products.csv`);
+      link.setAttribute("download", `cex_${currentSystemObj.name.toLowerCase().replace(/\\s+/g, '_')}_products.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
     }
 
-    function setLoading(isLoading) {
+    function setLoading(isLoading, text = "Loading CeX catalog...") {
       document.getElementById("loadingBox").classList.toggle("hidden", !isLoading);
+      document.getElementById("loadingText").innerText = text;
       document.getElementById("productsList").classList.toggle("opacity-40", isLoading);
     }
 
