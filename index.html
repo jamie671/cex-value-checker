@@ -112,8 +112,11 @@
     <!-- Platform Selector Bar with "All Systems" and "Browse 40+ Systems" -->
     <section>
       <div class="flex items-center justify-between text-xs text-slate-400 font-semibold mb-2">
-        <span>PLATFORM / SYSTEM</span>
-        <button onclick="openSystemModal()" class="text-red-400 hover:text-red-300 font-bold flex items-center gap-1">
+        <div class="flex items-center gap-1.5">
+          <span>PLATFORM:</span>
+          <span id="currentSystemNameBadge" class="text-red-400 font-bold bg-red-950/40 px-2 py-0.5 rounded-md border border-red-800/40">Wii</span>
+        </div>
+        <button type="button" onclick="openSystemModal()" class="text-red-400 hover:text-red-300 font-bold flex items-center gap-1">
           <i data-lucide="grid" class="w-3.5 h-3.5"></i>
           <span>Browse All 40+ Systems</span>
         </button>
@@ -190,7 +193,7 @@
   </main>
 
   <!-- Full System Browser Modal -->
-  <div id="systemModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col justify-end sm:justify-center p-0 sm:p-4 hidden">
+  <div id="systemModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col justify-end sm:justify-center p-0 sm:p-4 hidden" onclick="if(event.target === this) closeSystemModal()">
     <div class="bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-2xl max-w-2xl w-full mx-auto max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
       <!-- Modal Header -->
       <div class="p-4 border-b border-slate-800 flex items-center justify-between">
@@ -201,7 +204,7 @@
             <p class="text-[11px] text-slate-400">Choose from all Nintendo, PlayStation, Xbox, Sega, Retro & Tech systems</p>
           </div>
         </div>
-        <button onclick="closeSystemModal()" class="w-8 h-8 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center">
+        <button type="button" onclick="closeSystemModal()" class="w-8 h-8 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center">
           <i data-lucide="x" class="w-4 h-4"></i>
         </button>
       </div>
@@ -393,8 +396,12 @@
 
     function renderQuickPills() {
       const list = document.getElementById("platformScrollList");
-      list.innerHTML = QUICK_PILLS.map(p => `
-        <button onclick="selectSystemByName('${p.name}')" 
+      let pills = [...QUICK_PILLS];
+      if (currentSystemObj && !pills.some(p => p.name === currentSystemObj.name)) {
+        pills.splice(1, 0, { name: currentSystemObj.name, label: currentSystemObj.label || currentSystemObj.name });
+      }
+      list.innerHTML = pills.map(p => `
+        <button type="button" onclick="selectSystemByName('${p.name}')" 
                 class="px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition border ${
                   p.name === currentSystemObj.name
                     ? 'bg-red-600 text-white border-red-500 shadow-md shadow-red-600/30'
@@ -403,7 +410,7 @@
           ${p.label}
         </button>
       `).join("") + `
-        <button onclick="openSystemModal()" 
+        <button type="button" onclick="openSystemModal()" 
                 class="px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap bg-slate-800 hover:bg-slate-700 text-red-400 border border-slate-700 flex items-center gap-1">
           <i data-lucide="plus" class="w-3.5 h-3.5"></i>
           <span>More (40+)</span>
@@ -418,8 +425,10 @@
     }
 
     function selectSystem(sys) {
+      if (!sys) return;
       currentSystemObj = sys;
-      document.getElementById("currentSystemNameBadge").innerText = sys.label || sys.name;
+      const badge = document.getElementById("currentSystemNameBadge");
+      if (badge) badge.innerText = sys.label || sys.name;
       renderQuickPills();
       closeSystemModal();
 
@@ -439,34 +448,37 @@
           </h4>
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
             ${grp.items.map(itm => `
-              <button onclick="selectSystemByName('${itm.name}')" 
-                      class="sys-modal-item text-left p-2.5 rounded-xl bg-slate-950/70 hover:bg-slate-800/80 border border-slate-800/80 hover:border-slate-700 transition flex items-center justify-between"
+              <button type="button"
+                      data-sysname="${itm.name}"
+                      onclick="selectSystemByName('${itm.name}')" 
+                      class="sys-modal-item text-left p-2.5 rounded-xl bg-slate-950/70 hover:bg-slate-800/80 active:bg-slate-800 active:scale-95 border border-slate-800/80 hover:border-slate-700 transition flex items-center justify-between cursor-pointer"
                       data-label="${itm.label.toLowerCase()} ${itm.name.toLowerCase()}">
-                <span class="text-xs font-bold text-slate-200">${itm.label}</span>
-                <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-slate-500"></i>
+                <span class="text-xs font-bold text-slate-200 pointer-events-none">${itm.label}</span>
+                <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-slate-500 pointer-events-none"></i>
               </button>
             `).join("")}
           </div>
         </div>
       `).join("");
       lucide.createIcons();
-
-      document.getElementById("systemModalSearch").addEventListener("input", (e) => {
-        const val = e.target.value.toLowerCase().trim();
-        document.querySelectorAll(".sys-modal-item").forEach(el => {
-          const match = el.getAttribute("data-label").includes(val);
-          el.style.display = match ? "flex" : "none";
-        });
-      });
     }
 
     function openSystemModal() {
-      document.getElementById("systemModal").classList.remove("hidden");
-      document.getElementById("systemModalSearch").focus();
+      const modal = document.getElementById("systemModal");
+      if (modal) {
+        modal.classList.remove("hidden");
+        const search = document.getElementById("systemModalSearch");
+        if (search) {
+          search.value = "";
+          document.querySelectorAll(".sys-modal-item").forEach(el => el.style.display = "flex");
+          search.focus();
+        }
+      }
     }
 
     function closeSystemModal() {
-      document.getElementById("systemModal").classList.add("hidden");
+      const modal = document.getElementById("systemModal");
+      if (modal) modal.classList.add("hidden");
     }
 
     async function loadGlobalSearch(customQuery = "") {
@@ -854,6 +866,31 @@
       document.getElementById("manualBarcodeInput").addEventListener("keydown", (e) => {
         if (e.key === "Enter") handleManualBarcode();
       });
+
+      // System Modal Search & Delegated Click
+      const modalSearch = document.getElementById("systemModalSearch");
+      if (modalSearch) {
+        modalSearch.addEventListener("input", (e) => {
+          const val = e.target.value.toLowerCase().trim();
+          document.querySelectorAll(".sys-modal-item").forEach(el => {
+            const match = el.getAttribute("data-label").includes(val);
+            el.style.display = match ? "flex" : "none";
+          });
+        });
+      }
+
+      const modalContent = document.getElementById("systemModalContent");
+      if (modalContent) {
+        modalContent.addEventListener("click", (e) => {
+          const btn = e.target.closest(".sys-modal-item");
+          if (btn) {
+            const sysName = btn.getAttribute("data-sysname");
+            if (sysName) {
+              selectSystemByName(sysName);
+            }
+          }
+        });
+      }
     }
 
     // Barcode Scanner
