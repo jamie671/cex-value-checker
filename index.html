@@ -762,7 +762,7 @@
       return null;
     }
 
-    function getEbaySearchUrl(title, categoryName = "", systemName = "", soldOnly = true) {
+    function getEbaySearchUrl(title, categoryName = "", systemName = "", soldOnly = true, sortType = "") {
       if (!title) return "https://www.ebay.com.au";
       let clean = title;
       // Strip Australian film / game rating brackets: (G), (PG), (M), (MA15+), (R18+), (E), (T)
@@ -789,8 +789,18 @@
       }
 
       const finalQuery = (clean + suffix).trim();
-      const base = "https://www.ebay.com.au/sch/i.html?_nkw=" + encodeURIComponent(finalQuery);
-      return soldOnly ? base + "&LH_Sold=1&LH_Complete=1" : base;
+      let base = "https://www.ebay.com.au/sch/i.html?_nkw=" + encodeURIComponent(finalQuery);
+      if (soldOnly) {
+        base += "&LH_Sold=1&LH_Complete=1";
+      }
+      if (sortType === "lowest" || sortType === "low") {
+        base += "&_sop=15"; // Price + Postage: lowest first
+      } else if (sortType === "highest" || sortType === "high") {
+        base += "&_sop=16"; // Price + Postage: highest first
+      } else if (sortType === "recent") {
+        base += "&_sop=13"; // Ended recently
+      }
+      return base;
     }
 
     function formatProduct(h) {
@@ -942,6 +952,8 @@
       if (toShow.length === 0) {
         const cleanQuery = q || "";
         const emptyEbaySoldUrl = getEbaySearchUrl(cleanQuery, "", currentSystemObj.name, true);
+        const emptyEbaySoldLowUrl = getEbaySearchUrl(cleanQuery, "", currentSystemObj.name, true, "lowest");
+        const emptyEbaySoldHighUrl = getEbaySearchUrl(cleanQuery, "", currentSystemObj.name, true, "highest");
         const emptyEbayActiveUrl = getEbaySearchUrl(cleanQuery, "", currentSystemObj.name, false);
 
         list.innerHTML = `
@@ -961,17 +973,27 @@
                   <i data-lucide="shopping-bag" class="w-3.5 h-3.5 text-blue-400"></i>
                   <span>Instant Market Value on eBay Australia:</span>
                 </div>
-                <div class="flex flex-col sm:flex-row gap-2">
+                <div class="grid grid-cols-2 gap-2">
                   <a href="${emptyEbaySoldUrl}" target="_blank"
-                     class="flex-1 py-2.5 px-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-600/30 transition flex items-center justify-center gap-1.5">
-                    <i data-lucide="check-circle-2" class="w-4 h-4"></i>
-                    <span>Check eBay Sold Comps</span>
-                    <i data-lucide="external-link" class="w-3 h-3 opacity-70"></i>
+                     class="py-2 px-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-600/30 transition flex items-center justify-center gap-1">
+                    <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
+                    <span>90d Sold Comps</span>
+                    <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-70"></i>
                   </a>
                   <a href="${emptyEbayActiveUrl}" target="_blank"
-                     class="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 transition flex items-center justify-center gap-1">
+                     class="py-2 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 transition flex items-center justify-center gap-1">
                     <span>Active Listings</span>
-                    <i data-lucide="external-link" class="w-3 h-3 opacity-70"></i>
+                    <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-70"></i>
+                  </a>
+                  <a href="${emptyEbaySoldLowUrl}" target="_blank"
+                     class="py-2 px-2.5 bg-slate-800 hover:bg-slate-700 text-emerald-300 rounded-xl text-xs font-bold border border-emerald-900/50 transition flex items-center justify-center gap-1">
+                    <span>Lowest Sold (Floor)</span>
+                    <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-70"></i>
+                  </a>
+                  <a href="${emptyEbaySoldHighUrl}" target="_blank"
+                     class="py-2 px-2.5 bg-slate-800 hover:bg-slate-700 text-purple-300 rounded-xl text-xs font-bold border border-purple-900/50 transition flex items-center justify-center gap-1">
+                    <span>Highest Sold (Peak)</span>
+                    <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-70"></i>
                   </a>
                 </div>
                 ${currentSystemObj.name !== "ALL" ? `
@@ -1012,6 +1034,8 @@
         }
 
         const ebaySoldUrl = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, true);
+        const ebaySoldLowUrl = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, true, "lowest");
+        const ebaySoldHighUrl = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, true, "highest");
         const ebayActiveUrl = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, false);
 
         return `
@@ -1069,19 +1093,27 @@
                 ${profitHtml}
 
                 <div class="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between gap-2 flex-wrap">
-                  <div class="flex items-center gap-1.5 flex-wrap">
+                  <div class="flex items-center gap-1 flex-wrap">
                     <a href="${ebaySoldUrl}" target="_blank" 
-                       class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl ${
+                       class="inline-flex items-center gap-1 px-2 py-1 rounded-xl ${
                          (p.cash === 0 && p.voucher === 0) 
                            ? 'bg-blue-600 hover:bg-blue-500 text-white font-black shadow-md shadow-blue-600/30' 
                            : 'bg-blue-950/50 hover:bg-blue-900/60 text-blue-300 border border-blue-800/50 font-bold'
-                       } text-[10px] transition" title="Search completed & sold listings on eBay Australia">
+                       } text-[10px] transition" title="View total 90-day sold count and recent sales on eBay Australia">
                       <i data-lucide="shopping-bag" class="w-3 h-3 text-blue-400"></i>
-                      <span>eBay Sold Comps</span>
+                      <span>90d Sold</span>
                       <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-70"></i>
                     </a>
+                    <a href="${ebaySoldLowUrl}" target="_blank" 
+                       class="inline-flex items-center gap-0.5 px-2 py-1 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-emerald-300 border border-emerald-900/50 font-bold text-[10px] transition" title="Lowest Sold Price (Floor)">
+                      <span>Low</span>
+                    </a>
+                    <a href="${ebaySoldHighUrl}" target="_blank" 
+                       class="inline-flex items-center gap-0.5 px-2 py-1 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-purple-300 border border-purple-900/50 font-bold text-[10px] transition" title="Highest Sold Price (Peak)">
+                      <span>High</span>
+                    </a>
                     <a href="${ebayActiveUrl}" target="_blank" 
-                       class="inline-flex items-center gap-1 px-2 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-300 border border-slate-700 font-medium text-[10px] transition" title="Search active listings on eBay Australia">
+                       class="inline-flex items-center gap-1 px-1.5 py-1 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-300 border border-slate-700 font-medium text-[10px] transition" title="Search active listings on eBay Australia">
                       <span>Active</span>
                       <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-60"></i>
                     </a>
@@ -1291,31 +1323,39 @@
       if (filteredProducts.length === 0) return alert("No products to export!");
 
       const wsData = [
-        ["Product Name", "Year", "Cash Value ($)", "Voucher Value ($)", "CeX Sell Price ($)", "Voucher Bonus ($)", "Category", "Barcode / ID", "CeX Sell Link"]
+        ["Product Name", "Year", "Cash Value ($)", "Voucher Value ($)", "CeX Sell Price ($)", "Voucher Bonus ($)", "Category", "Barcode / ID", "CeX Sell Link", "eBay 90d Sold Link", "eBay Low Price Link", "eBay High Price Link", "eBay Active Link"]
       ];
       filteredProducts.forEach(p => {
-        wsData.push([p.name, p.year || "", p.cash, p.voucher, p.sell, p.bonus, p.category, p.id, p.url]);
+        const ebaySold = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, true);
+        const ebayLow = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, true, "lowest");
+        const ebayHigh = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, true, "highest");
+        const ebayActive = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, false);
+        wsData.push([p.name, p.year || "", p.cash, p.voucher, p.sell, p.bonus, p.category, p.id, p.url, ebaySold, ebayLow, ebayHigh, ebayActive]);
       });
 
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.aoa_to_sheet(wsData);
       XLSX.utils.book_append_sheet(wb, ws, "CeX Products");
-      XLSX.writeFile(wb, `cex_${currentSystemObj.name.toLowerCase().replace(/\\s+/g, '_')}_products.xlsx`);
+      XLSX.writeFile(wb, `cex_${currentSystemObj.name.toLowerCase().replace(/\s+/g, '_')}_products.xlsx`);
     }
 
     function exportToCsvFile() {
       toggleExportMenu();
       if (filteredProducts.length === 0) return alert("No products to export!");
 
-      let csv = "Product Name,Year,Cash Value ($),Voucher Value ($),CeX Sell Price ($),Voucher Bonus ($),Category,Barcode / ID,CeX Sell Link\n";
+      let csv = "Product Name,Year,Cash Value ($),Voucher Value ($),CeX Sell Price ($),Voucher Bonus ($),Category,Barcode / ID,CeX Sell Link,eBay 90d Sold Link,eBay Low Price Link,eBay High Price Link,eBay Active Link\n";
       filteredProducts.forEach(p => {
-        csv += `"${p.name.replace(/"/g, '""')}",${p.year || ""},${p.cash.toFixed(2)},${p.voucher.toFixed(2)},${p.sell.toFixed(2)},${p.bonus.toFixed(2)},"${p.category.replace(/"/g, '""')}","${p.id}","${p.url}"\n`;
+        const ebaySold = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, true);
+        const ebayLow = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, true, "lowest");
+        const ebayHigh = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, true, "highest");
+        const ebayActive = getEbaySearchUrl(p.name, p.category, currentSystemObj.name, false);
+        csv += `"${p.name.replace(/"/g, '""')}",${p.year || ""},${p.cash.toFixed(2)},${p.voucher.toFixed(2)},${p.sell.toFixed(2)},${p.bonus.toFixed(2)},"${p.category.replace(/"/g, '""')}","${p.id}","${p.url}","${ebaySold}","${ebayLow}","${ebayHigh}","${ebayActive}"\n`;
       });
 
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.setAttribute("download", `cex_${currentSystemObj.name.toLowerCase().replace(/\\s+/g, '_')}_products.csv`);
+      link.setAttribute("download", `cex_${currentSystemObj.name.toLowerCase().replace(/\s+/g, '_')}_products.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -1812,6 +1852,8 @@
 
         document.getElementById("lotTableBody").innerHTML = pricedItems.map(item => {
           const ebaySoldUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true);
+          const ebaySoldLowUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true, "lowest");
+          const ebaySoldHighUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true, "highest");
           return `
           <tr class="hover:bg-slate-900/60 border-b border-slate-900">
             <td class="p-2 font-medium">
@@ -1824,13 +1866,19 @@
                 `}
                 ${item.year ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">📅 ${item.year}</span>` : ''}
               </div>
-              <div class="mt-1 flex items-center gap-2">
+              <div class="mt-1 flex items-center gap-1.5 flex-wrap">
                 <a href="${ebaySoldUrl}" target="_blank" class="inline-flex items-center gap-1 text-[10px] font-bold ${
                   item.found ? 'text-blue-400 hover:text-blue-300 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-800/40' : 'text-white bg-blue-600 hover:bg-blue-500 px-2 py-0.5 rounded shadow-sm shadow-blue-600/30'
                 }">
                   <i data-lucide="shopping-bag" class="w-3 h-3"></i>
-                  <span>${item.found ? 'eBay Sold' : 'Check eBay Sold Market'}</span>
+                  <span>${item.found ? '90d Sold' : 'Check 90d Sold'}</span>
                   <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-70"></i>
+                </a>
+                <a href="${ebaySoldLowUrl}" target="_blank" class="inline-flex items-center gap-0.5 text-[9px] font-bold text-emerald-300 bg-slate-800 px-1.5 py-0.5 rounded border border-emerald-900/40 hover:bg-slate-700">
+                  <span>Low</span>
+                </a>
+                <a href="${ebaySoldHighUrl}" target="_blank" class="inline-flex items-center gap-0.5 text-[9px] font-bold text-purple-300 bg-slate-800 px-1.5 py-0.5 rounded border border-purple-900/40 hover:bg-slate-700">
+                  <span>High</span>
                 </a>
               </div>
             </td>
