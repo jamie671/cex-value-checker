@@ -6,6 +6,7 @@ Supports single/multiple URLs, category IDs, and entire systems/product lines (m
 """
 
 import argparse
+import base64
 import csv
 import json
 import os
@@ -421,7 +422,147 @@ def get_ebay_search_url(
     return base
 
 
-def transform_product(hit: Dict[str, Any]) -> Dict[str, Any]:
+class EbayClient:
+    """Official eBay Production REST API client for live Australian marketplace pricing."""
+
+    def __init__(
+        self,
+        config_path: str = "ebay_config.json",
+        app_id: str = "",
+        cert_id: str = "",
+        marketplace_id: str = "EBAY_AU",
+        country: str = "AU",
+    ):
+        self.app_id = app_id
+        self.cert_id = cert_id
+        self.marketplace_id = marketplace_id
+        self.country = country
+        self.token = None
+        self.token_expiry = 0
+        self.ctx = ssl.create_default_context()
+        self.ctx.check_hostname = False
+        self.ctx.verify_mode = ssl.CERT_NONE
+
+        if not self.app_id or not self.cert_id:
+            search_paths = [config_path, os.path.join(os.path.dirname(__file__), config_path)]
+            for p in search_paths:
+                if os.path.exists(p):
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            cfg = json.load(f)
+                            self.app_id = cfg.get("app_id", "")
+                            self.cert_id = cfg.get("cert_id", "")
+                            self.marketplace_id = cfg.get("marketplace_id", "EBAY_AU")
+                            self.country = cfg.get("country", "AU")
+                            break
+                    except Exception:
+                        pass
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.app_id and self.cert_id)
+
+    def get_token(self) -> Optional[str]:
+        if not self.is_configured:
+            return None
+        if self.token and time.time() < self.token_expiry - 120:
+            return self.token
+        try:
+            auth_str = f"{self.app_id}:{self.cert_id}"
+            auth_b64 = base64.b64encode(auth_str.encode("utf-8")).decode("utf-8")
+            data = urllib.parse.urlencode({
+                "grant_type": "client_credentials",
+                "scope": "https://api.ebay.com/oauth/api_scope"
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.ebay.com/identity/v1/oauth2/token",
+                data=data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Authorization": f"Basic {auth_b64}",
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                }
+            )
+            with urllib.request.urlopen(req, context=self.ctx, timeout=10) as resp:
+                d = json.loads(resp.read().decode("utf-8"))
+                self.token = d.get("access_token")
+                self.token_expiry = time.time() + d.get("expires_in", 7200)
+                return self.token
+        except Exception:
+            return None
+
+    def get_category_id(self, category_name: str = "", system_name: str = "") -> str:
+        cat = (category_name or "").lower()
+        if any(k in cat for k in ["blu-ray", "dvd", "vhs", "movie"]):
+            return "617"  # Movies & TV
+        if any(k in cat for k in ["book", "literature"]):
+            return "267"  # Books
+        return "139973"  # Video Games & Consoles
+
+    def clean_query(self, title: str, system_name: str = "") -> str:
+        clean = title
+        # 1. Flip "Title, The" -> "The Title"
+        clean = re.sub(r"^(.*?),\s*The\b", r"The \1", clean, flags=re.IGNORECASE)
+        # 2. Strip common rating tags & internal CeX flags
+        clean = re.sub(r"\b(G|PG|M|MA15\+|R18\+|E|T|AO)\b", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\*+DNU\*+|\(DNU\)", "", clean, flags=re.IGNORECASE)
+        # 3. Clean parenthetical descriptions that clutter eBay search
+        clean = re.sub(r"\([^)]*(&|,|\bdisc\b|\bplayers\b|\bmanual\b)[^)]*\)", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\(\s*[a-zA-Z0-9]{1,3}\s*\)", "", clean)
+        clean = clean.replace("(", " ").replace(")", " ")
+        # 4. Clean punctuation: colons, slashes, extra commas
+        clean = re.sub(r"[:/\\,]", " ", clean)
+        clean = " ".join(clean.split()).strip()
+
+        # 5. Clean system name
+        sys = system_name
+        for noise in ["Gaming Software", "Console Software", "Retro Gaming", "Gaming Consoles", "Software", "Consoles"]:
+            sys = re.sub(r"\b" + noise + r"\b", "", sys, flags=re.IGNORECASE)
+        sys = re.sub(r"[:/\\,]", " ", sys)
+        sys = " ".join(sys.split()).strip()
+
+        if sys and sys.lower() != "all" and sys.lower() not in clean.lower():
+            clean = f"{clean} {sys}"
+        return clean.strip()
+
+    def get_market_pricing(self, title: str, category_name: str = "", system_name: str = "") -> Dict[str, Any]:
+        token = self.get_token()
+        if not token:
+            return {"listings": 0, "low": None, "avg": None, "high": None}
+        query = self.clean_query(title, system_name)
+        cat_id = self.get_category_id(category_name, system_name)
+        url = (
+            f"https://api.ebay.com/buy/browse/v1/item_summary/search"
+            f"?q={urllib.parse.quote(query)}&category_ids={cat_id}&sort=price&limit=10"
+        )
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {token}",
+            "X-EBAY-C-MARKETPLACE-ID": self.marketplace_id,
+            "X-EBAY-C-ENDUSERCTX": f"contextualLocation=country%3D{self.country}",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        })
+        try:
+            with urllib.request.urlopen(req, context=self.ctx, timeout=8) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+                total = res.get("total", 0)
+                prices = []
+                for it in res.get("itemSummaries", []):
+                    p = float(it.get("price", {}).get("value", 0))
+                    ship = float(it.get("shippingOptions", [{}])[0].get("shippingCost", {}).get("value", 0) or 0)
+                    prices.append(p + ship)
+                if prices:
+                    return {
+                        "listings": total,
+                        "low": round(min(prices), 2),
+                        "avg": round(sum(prices) / len(prices), 2),
+                        "high": round(max(prices), 2),
+                    }
+                return {"listings": total, "low": None, "avg": None, "high": None}
+        except Exception:
+            return {"listings": 0, "low": None, "avg": None, "high": None}
+
+
+def transform_product(hit: Dict[str, Any], ebay_client: Optional[EbayClient] = None) -> Dict[str, Any]:
     """Extract and format clean fields for Excel/CSV export."""
     box_id = str(hit.get("boxId", "")).strip()
     name = str(hit.get("boxName", "")).strip()
@@ -462,6 +603,22 @@ def transform_product(hit: Dict[str, Any]) -> Dict[str, Any]:
 
     year = extract_year(name)
 
+    ebay_listings = ""
+    ebay_low = ""
+    ebay_avg = ""
+    ebay_high = ""
+
+    if ebay_client and ebay_client.is_configured:
+        ep = ebay_client.get_market_pricing(name, category, system)
+        if ep.get("listings") is not None and ep.get("listings") > 0:
+            ebay_listings = ep["listings"]
+        if ep.get("low") is not None:
+            ebay_low = ep["low"]
+        if ep.get("avg") is not None:
+            ebay_avg = ep["avg"]
+        if ep.get("high") is not None:
+            ebay_high = ep["high"]
+
     return {
         "Product Name": name,
         "Year": year if year is not None else "",
@@ -476,6 +633,10 @@ def transform_product(hit: Dict[str, Any]) -> Dict[str, Any]:
         "System / Platform": system,
         "Stock Status": stock_status,
         "Barcode / ID": box_id,
+        "eBay Listings": ebay_listings,
+        "eBay Low Price ($)": ebay_low,
+        "eBay Avg Price ($)": ebay_avg,
+        "eBay High Price ($)": ebay_high,
         "CeX Sell Link": product_url,
         "eBay Sold Link": ebay_sold_url,
         "eBay Low Price Link": ebay_low_url,
@@ -500,6 +661,10 @@ def export_to_csv(products: List[Dict[str, Any]], filepath: str):
         "Voucher Bonus ($)",
         "Cash % of Sell",
         "Trade % of Sell",
+        "eBay Active Listings",
+        "eBay Low Price ($)",
+        "eBay Avg Price ($)",
+        "eBay High Price ($)",
         "Category",
         "Category ID",
         "System / Platform",
@@ -516,6 +681,9 @@ def export_to_csv(products: List[Dict[str, Any]], filepath: str):
         writer = csv.writer(f)
         writer.writerow(headers)
         for p in products:
+            ebay_low = p.get("eBay Low Price ($)")
+            ebay_avg = p.get("eBay Avg Price ($)")
+            ebay_high = p.get("eBay High Price ($)")
             writer.writerow([
                 p.get("Product Name"),
                 p.get("Year", ""),
@@ -525,6 +693,10 @@ def export_to_csv(products: List[Dict[str, Any]], filepath: str):
                 f"{p.get('Voucher Bonus ($)', 0):.2f}",
                 f"{(p.get('Cash % of Sell', 0) * 100):.1f}%",
                 f"{(p.get('Trade % of Sell', 0) * 100):.1f}%",
+                p.get("eBay Listings", ""),
+                f"{ebay_low:.2f}" if isinstance(ebay_low, (int, float)) else (ebay_low or ""),
+                f"{ebay_avg:.2f}" if isinstance(ebay_avg, (int, float)) else (ebay_avg or ""),
+                f"{ebay_high:.2f}" if isinstance(ebay_high, (int, float)) else (ebay_high or ""),
                 p.get("Category"),
                 p.get("Category ID"),
                 p.get("System / Platform"),
@@ -561,6 +733,7 @@ def export_to_excel(
     cash_header_fill = PatternFill(start_color="166534", end_color="166534", fill_type="solid")
     voucher_header_fill = PatternFill(start_color="1E40AF", end_color="1E40AF", fill_type="solid")
     bonus_header_fill = PatternFill(start_color="6B21A8", end_color="6B21A8", fill_type="solid")
+    ebay_header_fill = PatternFill(start_color="0064D2", end_color="0064D2", fill_type="solid")
 
     thin_border = Border(
         left=Side(style="thin", color="E2E8F0"),
@@ -582,6 +755,10 @@ def export_to_excel(
         ("Voucher Bonus ($)", 18, regular_font, "$#,##0.00", bonus_header_fill),
         ("Cash % of Sell", 15, regular_font, "0.0%", None),
         ("Trade % of Sell", 15, regular_font, "0.0%", None),
+        ("eBay Listings", 14, regular_font, "#,##0", ebay_header_fill),
+        ("eBay Low ($)", 14, bold_font, "$#,##0.00", ebay_header_fill),
+        ("eBay Avg ($)", 14, bold_font, "$#,##0.00", ebay_header_fill),
+        ("eBay High ($)", 14, bold_font, "$#,##0.00", ebay_header_fill),
         ("Category", 22, regular_font, "@", None),
         ("Stock Status", 16, regular_font, "@", None),
         ("Barcode / ID", 16, regular_font, "@", None),
@@ -670,6 +847,10 @@ def export_to_excel(
                 p.get("Voucher Bonus ($)"),
                 p.get("Cash % of Sell"),
                 p.get("Trade % of Sell"),
+                p.get("eBay Listings"),
+                p.get("eBay Low Price ($)"),
+                p.get("eBay Avg Price ($)"),
+                p.get("eBay High Price ($)"),
                 p.get("Category"),
                 p.get("Stock Status"),
                 p.get("Barcode / ID"),
@@ -685,38 +866,38 @@ def export_to_excel(
                 cell.border = thin_border
                 cell.font = cell_font
 
-                if col_idx == 12 and val:
+                if col_idx == 16 and val:
                     cell.value = "Sell to CeX"
                     cell.hyperlink = val
                     cell.font = link_font
                     cell.alignment = Alignment(horizontal="center")
-                elif col_idx == 13 and val:
+                elif col_idx == 17 and val:
                     cell.value = "90d Sold"
                     cell.hyperlink = val
                     cell.font = link_font
                     cell.alignment = Alignment(horizontal="center")
-                elif col_idx == 14 and val:
+                elif col_idx == 18 and val:
                     cell.value = "Low Price"
                     cell.hyperlink = val
                     cell.font = link_font
                     cell.alignment = Alignment(horizontal="center")
-                elif col_idx == 15 and val:
+                elif col_idx == 19 and val:
                     cell.value = "High Price"
                     cell.hyperlink = val
                     cell.font = link_font
                     cell.alignment = Alignment(horizontal="center")
-                elif col_idx == 16 and val:
+                elif col_idx == 20 and val:
                     cell.value = "Active Comps"
                     cell.hyperlink = val
                     cell.font = link_font
                     cell.alignment = Alignment(horizontal="center")
                 else:
                     cell.value = val
-                    if num_fmt:
+                    if num_fmt and isinstance(val, (int, float)):
                         cell.number_format = num_fmt
-                    if col_idx in [2, 3, 4, 5, 6, 7]:
+                    if col_idx in [2, 3, 4, 5, 6, 7, 9, 10, 11, 12]:
                         cell.alignment = Alignment(horizontal="right")
-                    elif col_idx in [9, 10]:
+                    elif col_idx in [13, 14, 15]:
                         cell.alignment = Alignment(horizontal="center")
 
         last_col = get_column_letter(len(columns))
@@ -778,6 +959,8 @@ def main():
     parser.add_argument("--min-voucher", type=float, default=0, help="Minimum trade voucher price filter in AUD")
     parser.add_argument("--sort", choices=["cash", "voucher", "year_desc", "year_asc", "name"], default="cash", help="Sort order (cash, voucher, year_desc, year_asc, name)")
     parser.add_argument("--list-systems", action="store_true", help="List all available systems and platforms on CeX")
+    parser.add_argument("--ebay", action="store_true", help="Enrich items with live eBay Australia market prices (Listings, Low, Avg, High)")
+    parser.add_argument("--ebay-limit", type=int, default=0, help="Limit number of items to query eBay pricing for (0 for all)")
 
     args = parser.parse_args()
 
@@ -794,6 +977,36 @@ def main():
         print("  Media: Blu-Ray / Bluray, DVD / DVDs, 4K UHD, Anime, Books")
         return
 
+    ebay_client = None
+    if args.ebay:
+        ebay_client = EbayClient()
+        if not ebay_client.is_configured:
+            print("⚠️  Warning: eBay credentials not found in ebay_config.json. Proceeding without eBay live pricing.")
+            ebay_client = None
+        else:
+            token = ebay_client.get_token()
+            if token:
+                print(" Connected to eBay Production API (EBAY_AU). Live pricing enrichment active.")
+            else:
+                print("⚠️  Failed to authenticate with eBay API. Check credentials in ebay_config.json.")
+                ebay_client = None
+
+    def enrich_items(raw_hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        prods = []
+        total = len(raw_hits)
+        ebay_count = 0
+        for i, h in enumerate(raw_hits, 1):
+            use_ebay = False
+            if ebay_client:
+                if args.ebay_limit == 0 or ebay_count < args.ebay_limit:
+                    use_ebay = True
+                    ebay_count += 1
+            p = transform_product(h, ebay_client if use_ebay else None)
+            prods.append(p)
+            if use_ebay and (i % 10 == 0 or i == total):
+                print(f"   [eBay] Enriched {i}/{total} items...")
+        return prods
+
     category_product_map: Dict[str, List[Dict[str, Any]]] = {}
 
     if args.urls:
@@ -808,12 +1021,12 @@ def main():
                 for cid in cat_ids:
                     print(f" Fetching category ID: {cid} ({cat_name})...")
                     raw_hits = fetch_category_items(category_id=cid, query=q)
-                    products = [transform_product(h) for h in raw_hits]
+                    products = enrich_items(raw_hits)
                     category_product_map[cat_name] = products
             else:
                 print(f" Fetching search query: '{q}'...")
                 raw_hits = fetch_category_items(query=q)
-                products = [transform_product(h) for h in raw_hits]
+                products = enrich_items(raw_hits)
                 category_product_map[cat_name] = products
 
     elif args.system:
@@ -823,7 +1036,7 @@ def main():
         if not cat_info:
             print(f"No categories found for system '{system_name}'. Attempting direct fetch...")
             raw_hits = fetch_category_items(system_name=system_name, query=args.query)
-            prods = [transform_product(h) for h in raw_hits]
+            prods = enrich_items(raw_hits)
             category_product_map[system_name] = prods
         else:
             print(f"Found {len(cat_info)} categories under '{system_name}':")
@@ -833,7 +1046,7 @@ def main():
             for cid, cname, _ in cat_info:
                 print(f"\n Fetching {cname} (ID: {cid})...")
                 raw_hits = fetch_category_items(category_id=cid, query=args.query)
-                prods = [transform_product(h) for h in raw_hits]
+                prods = enrich_items(raw_hits)
                 category_product_map[cname] = prods
 
     elif args.categories:
@@ -841,14 +1054,14 @@ def main():
         for cid in cids:
             print(f"\n Fetching category ID: {cid}...")
             raw_hits = fetch_category_items(category_id=cid, query=args.query)
-            prods = [transform_product(h) for h in raw_hits]
+            prods = enrich_items(raw_hits)
             cat_name = prods[0]["Category"] if prods else f"Category {cid}"
             category_product_map[cat_name] = prods
 
     elif args.query:
         print(f"\n Searching CeX Australia globally for: '{args.query}'...")
         raw_hits = fetch_category_items(query=args.query)
-        prods = [transform_product(h) for h in raw_hits]
+        prods = enrich_items(raw_hits)
         category_product_map[f"Search: {args.query}"] = prods
 
     else:
@@ -856,7 +1069,7 @@ def main():
         print(f"No arguments provided. Defaulting to Wii Software:\n  {default_url}")
         parsed = parse_cex_url(default_url)
         raw_hits = fetch_category_items(category_id="795")
-        prods = [transform_product(h) for h in raw_hits]
+        prods = enrich_items(raw_hits)
         category_product_map["Wii Software"] = prods
 
     if args.min_cash > 0 or args.min_voucher > 0:
