@@ -1403,7 +1403,7 @@
               </button>
               <button type="button" id="btnEngineAi" onclick="setBulkScannerMode('ai')"
                       class="px-2.5 py-1 rounded-lg font-bold text-slate-400 hover:text-white transition">
-                ✨ AI Vision (Free Key)
+                ✨ AI Vision (Best · Free Key)
               </button>
             </div>
             
@@ -1628,111 +1628,225 @@
       await runLocalOcrProcess(currentBulkFile);
     }
 
-    function sharpen(ctx, w, h, mix = 0.45) {
-      try {
-        const imgData = ctx.getImageData(0, 0, w, h);
-        const d = imgData.data;
-        const copy = new Uint8ClampedArray(d);
-        for (let y = 1; y < h - 1; y++) {
-          for (let x = 1; x < w - 1; x++) {
-            const idx = (y * w + x) * 4;
-            for (let c = 0; c < 3; c++) {
-              const val = copy[idx + c];
-              const up = copy[((y - 1) * w + x) * 4 + c];
-              const down = copy[((y + 1) * w + x) * 4 + c];
-              const left = copy[(y * w + (x - 1)) * 4 + c];
-              const right = copy[(y * w + (x + 1)) * 4 + c];
-              const sharp = val * 5 - (up + down + left + right);
-              d[idx + c] = Math.min(255, Math.max(0, val * (1 - mix) + sharp * mix));
-            }
-          }
-        }
-        ctx.putImageData(imgData, 0, 0);
-      } catch (err) {
-        console.warn("Sharpening filter error:", err);
-      }
+    // ===================== Shelf photo OCR pipeline =====================
+    // Strategy: find the horizontal band of the photo that actually contains the spines,
+    // rotate it so spine text reads left-to-right, upscale so small spine fonts are ~40-90px,
+    // run Tesseract in sparse-text mode (one word box at a time), then group the word boxes
+    // by their position across the spines so each spine becomes one title line.
+    // Big canvases are tiled to stay under mobile Safari's canvas limits.
+
+    function loadImageElement(file) {
+      return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+        img.onerror = (e) => { URL.revokeObjectURL(url); reject(new Error("Could not read that photo.")); };
+        img.src = url;
+      });
     }
 
-    function processImageToCanvas(fileOrImg, maxWidth = 1800, rotateDeg = 0, cropOpts = null) {
-      return new Promise((resolve, reject) => {
-        const handleImg = (img) => {
-          let origW = img.naturalWidth || img.width;
-          let origH = img.naturalHeight || img.height;
+    function grayFromCanvas(canvas) {
+      const ctx = canvas.getContext("2d");
+      const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const g = new Float32Array(canvas.width * canvas.height);
+      for (let i = 0, p = 0; i < g.length; i++, p += 4) g[i] = 0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2];
+      return g;
+    }
 
-          let sx = 0, sy = 0, sw = origW, sh = origH;
-          if (cropOpts) {
-            const topPct = (cropOpts.top || 0) / 100;
-            const bottomPct = (cropOpts.bottom || 0) / 100;
-            sx = 0;
-            sy = Math.round(origH * topPct);
-            sw = origW;
-            sh = Math.max(50, Math.round(origH * (1 - topPct - bottomPct)));
-          }
+    function smooth1d(arr, r) {
+      const out = new Float32Array(arr.length);
+      for (let i = 0; i < arr.length; i++) {
+        let s = 0, n = 0;
+        for (let k = -r; k <= r; k++) { const j = i + k; if (j >= 0 && j < arr.length) { s += arr[j]; n++; } }
+        out[i] = s / n;
+      }
+      return out;
+    }
 
-          const scale = (sw < 1200 && sh < 1200) ? 2.0 : Math.min(2.0, maxWidth / Math.max(sw, sh));
-          let w = Math.round(sw * scale);
-          let h = Math.round(sh * scale);
-
-          const canvas = document.createElement("canvas");
-          const ctx = canvas.getContext("2d");
-
-          if (rotateDeg === 90 || rotateDeg === 270) {
-            canvas.width = h;
-            canvas.height = w;
-          } else {
-            canvas.width = w;
-            canvas.height = h;
-          }
-
-          ctx.save();
-          if (rotateDeg === 90) {
-            ctx.translate(h, 0);
-            ctx.rotate(90 * Math.PI / 180);
-          } else if (rotateDeg === 270) {
-            ctx.translate(0, w);
-            ctx.rotate(270 * Math.PI / 180);
-          } else if (rotateDeg === 180) {
-            ctx.translate(w, h);
-            ctx.rotate(Math.PI);
-          }
-          ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
-          ctx.restore();
-
-          // Grayscale conversion
-          try {
-            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const d = imgData.data;
-            for (let i = 0; i < d.length; i += 4) {
-              const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-              d[i] = gray;
-              d[i + 1] = gray;
-              d[i + 2] = gray;
-            }
-            ctx.putImageData(imgData, 0, 0);
-          } catch (err) {
-            console.warn("Grayscale conversion skipped:", err);
-          }
-
-          // Sharpen edges of spine fonts
-          sharpen(ctx, canvas.width, canvas.height, 0.45);
-
-          resolve(canvas);
-        };
-
-        if (fileOrImg instanceof HTMLImageElement || fileOrImg instanceof Image) {
-          handleImg(fileOrImg);
-        } else {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            const img = new Image();
-            img.onload = () => handleImg(img);
-            img.onerror = reject;
-            img.src = e.target.result;
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(fileOrImg);
+    // Returns [y0, y1] (fractions 0..1) of the dominant edge-dense horizontal band = the shelf of spines.
+    // Ignores plain shelf wood and other shelves above/below.
+    function detectSpineBand(img, cropOpts) {
+      const W = 800;
+      const srcW = img.naturalWidth, srcH = img.naturalHeight;
+      const topPct = cropOpts ? (cropOpts.top || 0) / 100 : 0;
+      const botPct = cropOpts ? (cropOpts.bottom || 0) / 100 : 0;
+      const sy = Math.round(srcH * topPct), sh = Math.max(50, Math.round(srcH * (1 - topPct - botPct)));
+      const scale = W / srcW;
+      const c = document.createElement("canvas");
+      c.width = W; c.height = Math.max(1, Math.round(sh * scale));
+      c.getContext("2d").drawImage(img, 0, sy, srcW, sh, 0, 0, c.width, c.height);
+      const w = c.width, h = c.height;
+      const gray = grayFromCanvas(c);
+      const prof = new Float32Array(h);
+      for (let y = 0; y < h; y++) {
+        const row = y * w; let acc = 0;
+        for (let x = 1; x < w; x++) acc += Math.abs(gray[row + x] - gray[row + x - 1]);
+        prof[y] = acc / w;
+      }
+      const sm = smooth1d(prof, Math.max(1, Math.round(h * 0.01)));
+      let mx = 0; for (const v of sm) mx = Math.max(mx, v);
+      const thr = mx * 0.3;
+      const runs = []; let start = -1;
+      for (let y = 0; y <= h; y++) {
+        const on = y < h && sm[y] >= thr;
+        if (on && start < 0) start = y;
+        if (!on && start >= 0) { let sum = 0; for (let k = start; k < y; k++) sum += sm[k]; runs.push({ a: start, b: y, sum }); start = -1; }
+      }
+      let y0 = 0, y1 = h;
+      if (runs.length) {
+        runs.sort((p, q) => p.a - q.a);
+        const merged = [runs[0]];
+        for (const r of runs.slice(1)) {
+          const last = merged[merged.length - 1];
+          if (r.a - last.b < h * 0.03) { last.b = r.b; last.sum += r.sum; } else merged.push(r);
         }
-      });
+        merged.sort((p, q) => q.sum - p.sum);
+        const best = merged[0];
+        if (best.b - best.a >= h * 0.15) {
+          y0 = Math.max(0, best.a - Math.round(h * 0.02));
+          y1 = Math.min(h, best.b + Math.round(h * 0.02));
+        }
+      }
+      // Convert back to fractions of the full image height
+      return [topPct + (y0 / h) * (sh / srcH), topPct + (y1 / h) * (sh / srcH)];
+    }
+
+    // Contrast-stretch (2nd..98th percentile) + grayscale, in place on a canvas.
+    function normalizeGrayscale(ctx, w, h) {
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const d = imgData.data;
+      const hist = new Uint32Array(256);
+      const n = w * h;
+      const g = new Uint8ClampedArray(n);
+      for (let i = 0, p = 0; i < n; i++, p += 4) { const v = (0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]) | 0; g[i] = v; hist[v]++; }
+      let lo = 0, hi = 255, acc = 0;
+      for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * 0.02) { lo = v; break; } }
+      acc = 0;
+      for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= n * 0.02) { hi = v; break; } }
+      const range = Math.max(1, hi - lo);
+      for (let i = 0, p = 0; i < n; i++, p += 4) {
+        const v = Math.min(255, Math.max(0, ((g[i] - lo) * 255) / range));
+        d[p] = v; d[p + 1] = v; d[p + 2] = v;
+      }
+      ctx.putImageData(imgData, 0, 0);
+    }
+
+    // Build OCR tiles for a band of the image, rotated so text reads left-to-right.
+    // bandFrac = [y0,y1] fractions of image height (or null for the whole image).
+    // Returns [{canvas, ox, oy}] where ox/oy are the tile offsets in the rotated, scaled band.
+    function buildOcrTiles(img, bandFrac, rotateDeg) {
+      const srcW = img.naturalWidth, srcH = img.naturalHeight;
+      const sy = bandFrac ? Math.round(srcH * bandFrac[0]) : 0;
+      const sh = bandFrac ? Math.max(50, Math.round(srcH * (bandFrac[1] - bandFrac[0]))) : srcH;
+      const sideways = (rotateDeg === 90 || rotateDeg === 270);
+      // After rotation: the axis running across the spines is what we size to.
+      const acrossSpines = sideways ? sh : srcW;
+      const alongSpines = sideways ? srcW : sh;
+      const TARGET_ACROSS = 3000;
+      const scale = Math.min(4.5, Math.max(1.0, TARGET_ACROSS / acrossSpines));
+      const outW = Math.round(acrossSpines * scale);   // rotated width
+      const outH = Math.round(alongSpines * scale);    // rotated height
+      const MAX_TILE_PX = 8.5e6;
+      const tileH = Math.max(600, Math.floor(MAX_TILE_PX / outW));
+      const overlap = Math.round(Math.min(160, tileH * 0.08));
+      const tiles = [];
+      for (let ty = 0; ty < outH; ty += (tileH - overlap)) {
+        const th = Math.min(tileH, outH - ty);
+        if (th < 40) break;
+        const canvas = document.createElement("canvas");
+        canvas.width = outW; canvas.height = th;
+        const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.save();
+        // Map: rotated-band pixel (x, y + ty) <- source. Draw whole rotated band shifted up by ty.
+        ctx.translate(0, -ty);
+        if (rotateDeg === 90) { ctx.translate(outW, 0); ctx.rotate(Math.PI / 2); }
+        else if (rotateDeg === 270) { ctx.translate(0, outH); ctx.rotate(-Math.PI / 2); }
+        else if (rotateDeg === 180) { ctx.translate(outW, outH); ctx.rotate(Math.PI); }
+        // In the un-rotated frame the band is (srcW*scale) x (sh*scale)
+        ctx.drawImage(img, 0, sy, srcW, sh, 0, 0, Math.round(srcW * scale), Math.round(sh * scale));
+        ctx.restore();
+        normalizeGrayscale(ctx, canvas.width, canvas.height);
+        tiles.push({ canvas, ox: 0, oy: ty });
+        if (ty + th >= outH) break;
+      }
+      return tiles;
+    }
+
+    const ocrAlnum = (t) => (t.match(/[A-Za-z0-9]/g) || []).length;
+    const ocrLetters = (t) => (t.match(/[A-Za-z]/g) || []).length;
+    function ocrCleanToken(t) {
+      return t.trim().replace(/[®™©]/g, "").replace(/^[^A-Za-z0-9(]+|[^A-Za-z0-9!'")+]+$/g, "");
+    }
+    function ocrIsJunkToken(t) {
+      const n = ocrAlnum(t);
+      if (n === 0) return true;
+      if (t.length === 1 && !/^[0-9IVX]$/.test(t)) return true;
+      return n < t.length * 0.6;
+    }
+    function ocrKeepWord(text, conf) {
+      const L = ocrAlnum(text);
+      return (L >= 4 && conf >= 12) || (L >= 2 && conf >= 45) || (L === 1 && conf >= 80);
+    }
+
+    // Group Tesseract word boxes into one line per spine. Words on the same spine share the same
+    // vertical interval in the rotated band; merge on >=40% overlap of the smaller box.
+    function groupWordsIntoSpines(words) {
+      const ws = [];
+      for (const w of words) {
+        const text = ocrCleanToken(w.text || "");
+        const h = w.bbox.y1 - w.bbox.y0;
+        if (!text || h <= 6 || ocrIsJunkToken(text) || !ocrKeepWord(text, w.confidence)) continue;
+        ws.push({ text, conf: w.confidence, x0: w.bbox.x0, y0: w.bbox.y0, y1: w.bbox.y1 });
+      }
+      ws.sort((a, b) => (a.y0 + a.y1) - (b.y0 + b.y1));
+      const clusters = [];
+      for (const w of ws) {
+        let target = null;
+        for (const c of clusters) {
+          const ov = Math.min(c.y1, w.y1) - Math.max(c.y0, w.y0);
+          const minH = Math.min(c.y1 - c.y0, w.y1 - w.y0);
+          if (ov > 0 && ov >= 0.4 * minH) { target = c; break; }
+        }
+        if (target) { target.items.push(w); target.y0 = Math.min(target.y0, w.y0); target.y1 = Math.max(target.y1, w.y1); }
+        else clusters.push({ y0: w.y0, y1: w.y1, items: [w] });
+      }
+      return clusters.map(c => {
+        c.items.sort((a, b) => a.x0 - b.x0);
+        const strong = c.items.some(w => ocrLetters(w.text) >= 3 && w.conf >= 45);
+        const letters = c.items.reduce((s, w) => s + ocrLetters(w.text), 0);
+        const conf = c.items.reduce((s, w) => s + w.conf, 0) / c.items.length;
+        return { cy: (c.y0 + c.y1) / 2, text: c.items.map(w => w.text).join(" "), strong, letters, conf };
+      }).filter(c => c.strong && c.letters >= 4).sort((a, b) => a.cy - b.cy);
+    }
+
+    // Deduplicate words that appear twice because they fell into a tile overlap.
+    function dedupeWords(words) {
+      const out = [];
+      for (const w of words) {
+        const dup = out.some(o => o.text === w.text && Math.abs(o.bbox.x0 - w.bbox.x0) < 12 && Math.abs(o.bbox.y0 - w.bbox.y0) < 12);
+        if (!dup) out.push(w);
+      }
+      return out;
+    }
+
+    // Run the sparse-text OCR over the tiles for one orientation. onTile(i, n) reports progress.
+    async function ocrOrientation(worker, img, bandFrac, rotateDeg, onTile) {
+      const tiles = buildOcrTiles(img, bandFrac, rotateDeg);
+      let words = [];
+      for (let i = 0; i < tiles.length; i++) {
+        if (onTile) onTile(i, tiles.length);
+        const { canvas, ox, oy } = tiles[i];
+        const ret = await worker.recognize(canvas);
+        for (const w of (ret.data.words || [])) {
+          words.push({ text: w.text, confidence: w.confidence, bbox: { x0: w.bbox.x0 + ox, x1: w.bbox.x1 + ox, y0: w.bbox.y0 + oy, y1: w.bbox.y1 + oy } });
+        }
+        // free the tile
+        canvas.width = 1; canvas.height = 1;
+      }
+      const spines = groupWordsIntoSpines(dedupeWords(words));
+      return { spines, lines: spines.map(s => s.text) };
     }
 
     function setBulkScannerMode(mode) {
@@ -1777,57 +1891,53 @@
       }
     }
 
-    function fileToBase64(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const res = reader.result;
-          const base64 = res.split(',')[1];
-          resolve(base64);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
+    // Re-encode any photo (incl. iPhone HEIC) as a JPEG no wider than maxSide, returned as base64.
+    async function fileToJpegBase64(file, maxSide = 2400, quality = 0.88) {
+      const img = await loadImageElement(file);
+      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.naturalWidth * scale);
+      c.height = Math.round(img.naturalHeight * scale);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      const dataUrl = c.toDataURL("image/jpeg", quality);
+      return dataUrl.split(",")[1];
     }
 
-    async function callGeminiVision(base64Data, apiKey) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
-      const prompt = `You are an expert video game appraiser. Examine this photo of game spines on a shelf or stacked flat. Extract every visible video game title and platform (e.g. 'The Orange Box Xbox 360', 'Tiger Woods PGA Tour 09 Xbox 360', 'Street Fighter IV Xbox 360', 'Half-Life 2 Xbox', 'Just Cause 2 Xbox 360', 'MotoGP 3 PS2', 'Spider-Man PS4', 'Grand Theft Auto V PS4'). Output ONLY the cleaned titles with platform, one title per line. No numbers, no bullet points, no extra text.`;
+    // Gemini model candidates, newest/cheapest first. gemini-2.0-flash was shut down on 1 June 2026,
+    // so we walk this list and fall back when a model ID is retired or unavailable for the key.
+    const GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+
+    async function callGeminiVision(base64Data, apiKey, mimeType = "image/jpeg") {
+      const prompt = `You are an expert video game appraiser. Examine this photo of game spines on a shelf or stacked flat. Extract every visible video game title and platform (e.g. 'The Orange Box Xbox 360', 'Tiger Woods PGA Tour 09 Xbox 360', 'Street Fighter IV Xbox 360', 'Half-Life 2 Xbox', 'Just Cause 2 Xbox 360', 'MotoGP 3 PS2', 'Spider-Man PS4', 'Grand Theft Auto V PS4'). Read left to right. If a spine is partly hidden, give your best guess at the title. Output ONLY the cleaned titles with platform, one title per line. No numbers, no bullet points, no extra text.`;
 
       const payload = {
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              {
-                inline_data: {
-                  mime_type: "image/jpeg",
-                  data: base64Data
-                }
-              }
-            ]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 2048
-        }
+        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Data } }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
       };
 
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      if (!resp.ok) {
+      let lastErr = null;
+      for (const model of GEMINI_MODELS) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
+        let resp;
+        try {
+          resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        } catch (netErr) {
+          throw new Error("Network error reaching Gemini. Check your connection and try again.");
+        }
+        if (resp.ok) {
+          const data = await resp.json();
+          const parts = data?.candidates?.[0]?.content?.parts || [];
+          return parts.map(p => p.text || "").join("\n");
+        }
         const errData = await resp.json().catch(() => ({}));
         const msg = errData?.error?.message || `Gemini API error ${resp.status}: ${resp.statusText}`;
-        throw new Error(msg);
+        lastErr = new Error(msg);
+        // 404 = model retired/unknown, 400 with "not found"/"not supported" = same. Try the next model.
+        const retired = resp.status === 404 || /not found|not supported|deprecated|no longer available/i.test(msg);
+        if (!retired) throw lastErr;
+        console.warn(`Gemini model ${model} unavailable, trying next:`, msg);
       }
-
-      const data = await resp.json();
-      return data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      throw lastErr || new Error("No Gemini model available.");
     }
 
     const COMMON_SPLITS = [
@@ -1870,7 +1980,12 @@
       [/\b(wrestemana|wrestleman)\b/gi, "Wrestlemania"],
       [/\b(saitiiro?nt|saittiiront)\b/gi, "Battlefront"],
       [/\b(nenoverse)\b/gi, "Xenoverse"],
-      [/\b(the\s*oran)\b/gi, "The Orange Box"],
+      [/\b(the\s*oran|urange\s*box|orange\s*bax)\b/gi, "The Orange Box"],
+      [/\b(justcruse[z2]?|justchuse[z2]?|justcause|jus\s*[lt]?cruse|just\s*chuse|just\s*cruse|t1st\s*cause)\b/gi, "Just Cause"],
+      [/\b(mirr?ors?\s*edge|mirrors?\s*ege)\b/gi, "Mirrors Edge"],
+      [/\b(theru\s*auto|theft\s*auro|grand\s*thef)\b/gi, "Theft Auto"],
+      [/\b(nunstop|nonstap)\b/gi, "Nonstop"],
+      [/\b(wrest\s*ling)\b/gi, "Wrestling"],
       [/\b(toi\s*clancy)\b/gi, "Tom Clancy"]
     ];
 
@@ -1882,6 +1997,9 @@
       for (let rawLine of lines) {
         let line = rawLine.trim();
         if (!line || line.length < 3) continue;
+
+        // 0. Split letters fused onto a trailing number: "CAUSE2" -> "CAUSE 2", "FIFA20" -> "FIFA 20"
+        line = line.replace(/([A-Za-z]{3,})(\d)/g, "$1 $2");
 
         // 1. Unsquish fused game keywords
         for (let [rx, repl] of COMMON_SPLITS) {
@@ -1907,7 +2025,7 @@
 
         // 6. Remove symbols & punctuation
         line = line.replace(/[[\](){}<>|~_\\^@#%*=+\u00A9\u00AE\u2122\u00A7\u00B1\u00AB\u00BB\u00B6\u00A5\u00A2\u00A3\u00B0""!?:;]/g, " ");
-        line = line.replace(/["\x27‘’`]/g, " ");
+        line = line.replace(/["\x27‘’“”`]/g, " ");
         line = line.replace(/\s+/g, " ").trim();
 
         // 7. Clean leading/trailing single character junk
@@ -1922,6 +2040,9 @@
 
         if (line.length < 3) continue;
         if (!/[a-zA-Z]{3,}/.test(line)) continue;
+        // Drop OCR crumbs like "Als" or "pg": need a 4+ letter word, or two words that both have letters
+        const wordsWithLetters = line.split(" ").filter(w => /[a-zA-Z]{2,}/.test(w));
+        if (!/[a-zA-Z]{4,}/.test(line) && wordsWithLetters.length < 2) continue;
         validTitles.push(line);
       }
 
@@ -1966,94 +2087,95 @@
       const statusText = document.getElementById("bulkOcrStatusText");
       const percentText = document.getElementById("bulkOcrPercent");
       const progressBar = document.getElementById("bulkOcrProgressBar");
+      const spinner = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span>`;
+      const setStatus = (msg, pct) => {
+        statusText.innerHTML = `${spinner}<span>${msg}</span>`;
+        if (pct != null) { percentText.innerText = `${pct}%`; progressBar.style.width = `${pct}%`; }
+      };
 
       statusBox.classList.remove("hidden");
-      statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Prepping high-def photo & unsharp masking...</span>`;
-      percentText.innerText = "15%";
-      progressBar.style.width = "15%";
+      setStatus("Loading photo & finding the shelf...", 5);
 
+      let worker = null;
       try {
-        if (typeof Tesseract === "undefined") throw new Error("Local OCR engine loading, please retry in a moment.");
+        if (typeof Tesseract === "undefined") throw new Error("Local OCR engine still loading, please retry in a moment.");
 
         const rotSelect = document.getElementById("bulkOrientationSelect");
         const orientationChoice = rotSelect ? rotSelect.value : "auto";
-
         const cropTop = parseInt(document.getElementById("cropTrimTop")?.value || 0, 10);
         const cropBottom = parseInt(document.getElementById("cropTrimBottom")?.value || 0, 10);
         const cropOpts = (cropTop > 0 || cropBottom > 0) ? { top: cropTop, bottom: cropBottom } : null;
+        const cropFrac = [cropTop / 100, 1 - cropBottom / 100];
 
-        const worker = await Tesseract.createWorker("eng", 1, {
+        const img = await loadImageElement(file);
+        const bandFrac = detectSpineBand(img, cropOpts);
+
+        setStatus("Starting on-device text engine...", 10);
+        let currentOcrTile = null;
+        worker = await Tesseract.createWorker("eng", 1, {
           logger: m => {
-            if (m.status === "recognizing text") {
-              const pct = Math.round((m.progress || 0) * 100);
-              percentText.innerText = `${pct}%`;
-              progressBar.style.width = `${pct}%`;
-              statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Scanning spines on-device (${pct}%)...</span>`;
+            if (m.status === "recognizing text" && currentOcrTile) {
+              const { i, n, base, span } = currentOcrTile;
+              const pct = Math.round(base + span * ((i + (m.progress || 0)) / n));
+              percentText.innerText = `${pct}%`; progressBar.style.width = `${pct}%`;
             }
           }
         });
-        await worker.setParameters({ tessedit_pageseg_mode: 6 });
+        // PSM 11 = sparse text: find words anywhere, no assumption about layout.
+        await worker.setParameters({ tessedit_pageseg_mode: "11" });
 
-        let lines = [];
+        const runPass = async (deg, label, base, span) => {
+          // Upright spines (90/270): crop to the detected shelf band. Flat stacks: keep the whole (user-cropped) image.
+          const sideways = (deg === 90 || deg === 270);
+          const frac = sideways ? bandFrac : cropFrac;
+          return ocrOrientation(worker, img, frac, deg, (i, n) => {
+            currentOcrTile = { i, n, base, span };
+            setStatus(`${label} (part ${i + 1} of ${n})...`, Math.round(base + span * (i / n)));
+          });
+        };
+
+        let result, winningAngle;
         if (orientationChoice === "auto") {
-          statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Auto-detecting spine orientation...</span>`;
-          // Evaluate 0° (flat) vs 270° (upright)
-          const c0 = await processImageToCanvas(file, 1800, 0, cropOpts);
-          const ret0 = await worker.recognize(c0);
-          const score0 = scoreText(ret0.data.text || "");
-
-          const c270 = await processImageToCanvas(file, 1800, 270, cropOpts);
-          const ret270 = await worker.recognize(c270);
-          const score270 = scoreText(ret270.data.text || "");
-
-          const winningAngle = (score0 >= score270) ? 0 : 270;
-          const winningText = (score0 >= score270) ? ret0.data.text : ret270.data.text;
-          statusText.innerHTML = `<span>Detected ${winningAngle === 0 ? '📖 Flat Stack' : '📚 Upright Shelf'} (${Math.max(score0, score270)} confidence pts)...</span>`;
-          lines = cleanAndFilterTitles(winningText);
-
-          // If alternate angle also found titles, merge unique titles
-          const altLines = cleanAndFilterTitles(winningAngle === 0 ? ret270.data.text : ret0.data.text);
-          for (const al of altLines) {
-            if (!lines.some(l => l.toLowerCase() === al.toLowerCase())) {
-              lines.push(al);
-            }
+          // Shelves are the common case: try upright spines first, only fall back to flat if that finds little.
+          result = await runPass(270, "Reading upright spines", 12, 60);
+          winningAngle = 270;
+          if (result.spines.length < 3) {
+            const flat = await runPass(0, "Checking for a flat stack", 72, 22);
+            if (flat.spines.length > result.spines.length) { result = flat; winningAngle = 0; }
           }
         } else {
           const deg = parseInt(orientationChoice, 10);
-          const canvas = await processImageToCanvas(file, 1800, deg, cropOpts);
-          const ret = await worker.recognize(canvas);
-          lines = cleanAndFilterTitles(ret.data.text || "");
-
-          // Fallback if user selected angle got fewer than 2 titles:
-          if (lines.length < 2) {
-            const fallbackDeg = (deg === 270) ? 0 : 270;
-            statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Checking alternate orientation (${fallbackDeg}°)...</span>`;
-            const altCanvas = await processImageToCanvas(file, 1800, fallbackDeg, cropOpts);
-            const altRet = await worker.recognize(altCanvas);
-            const altLines = cleanAndFilterTitles(altRet.data.text || "");
-            if (altLines.length > lines.length) {
-              lines = altLines;
-            }
+          result = await runPass(deg, "Reading spines", 12, 70);
+          winningAngle = deg;
+          if (result.spines.length < 2) {
+            const altDeg = (deg === 0 || deg === 180) ? 270 : 0;
+            const alt = await runPass(altDeg, "Checking alternate orientation", 82, 12);
+            if (alt.spines.length > result.spines.length) { result = alt; winningAngle = altDeg; }
           }
         }
-        await worker.terminate();
+
+        setStatus("Cleaning up titles...", 96);
+        const lines = cleanAndFilterTitles(result.lines.join("\n"));
 
         if (lines.length > 0) {
           const textarea = document.getElementById("lotTextarea");
           const existing = textarea.value.trim();
           textarea.value = existing ? `${existing}\n${lines.join("\n")}` : lines.join("\n");
-          statusText.innerHTML = `<span class="text-emerald-400 font-bold">✓ Extracted ${lines.length} titles! Review below & click Calculate.</span>`;
+          const layout = (winningAngle === 0 || winningAngle === 180) ? "flat stack" : "upright shelf";
+          statusText.innerHTML = `<span class="text-emerald-400 font-bold">✓ Read ${lines.length} spines (${layout}). Fix any typos below, then Calculate.</span> <span class="text-slate-400">For near-perfect results use ✨ AI Vision.</span>`;
           percentText.innerText = "100%";
           progressBar.style.width = "100%";
-          setTimeout(() => statusBox.classList.add("hidden"), 4000);
-        } else {
-          statusText.innerHTML = `<span class="text-amber-400 font-semibold">No clean titles found. Try adjusting the Focus Spines crop or tap 'Paste Copied Spines'!</span>`;
           setTimeout(() => statusBox.classList.add("hidden"), 6000);
+        } else {
+          statusText.innerHTML = `<span class="text-amber-400 font-semibold">Couldn't read any spines. Get closer so titles are larger, avoid glare, or switch to ✨ AI Vision.</span>`;
+          setTimeout(() => statusBox.classList.add("hidden"), 7000);
         }
       } catch (err) {
         console.error("Local OCR error:", err);
         statusText.innerHTML = `<span class="text-rose-400 font-semibold">OCR note: ${err.message || 'Error processing image'}. You can type titles below.</span>`;
         setTimeout(() => statusBox.classList.add("hidden"), 5000);
+      } finally {
+        if (worker) { try { await worker.terminate(); } catch (e) {} }
       }
     }
 
@@ -2096,8 +2218,8 @@
         progressBar.style.width = "50%";
 
         try {
-          const base64Data = await fileToBase64(file);
-          const aiText = await callGeminiVision(base64Data, geminiKey);
+          const base64Data = await fileToJpegBase64(file);
+          const aiText = await callGeminiVision(base64Data, geminiKey, "image/jpeg");
           const lines = aiText.split("\n")
             .map(l => l.trim().replace(/^[\*\-\d\.\)\s]+/, '').replace(/^["']|["']$/g, '').trim())
             .filter(l => l.length >= 3);
@@ -2108,7 +2230,7 @@
             textarea.value = existing ? `${existing}\n${lines.join("\n")}` : lines.join("\n");
             percentText.innerText = "100%";
             progressBar.style.width = "100%";
-            statusText.innerHTML = `<span class="text-emerald-400 font-bold">✓ AI Vision extracted ${lines.length} titles with 100% accuracy!</span>`;
+            statusText.innerHTML = `<span class="text-emerald-400 font-bold">✓ AI Vision read ${lines.length} titles. Review below & click Calculate.</span>`;
             setTimeout(() => statusBox.classList.add("hidden"), 4000);
           } else {
             statusText.innerHTML = `<span class="text-amber-400 font-semibold">No titles detected. Try another photo or type titles below.</span>`;

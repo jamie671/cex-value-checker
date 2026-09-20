@@ -60,7 +60,9 @@ The user has an approved eBay Developers Program Production account used by `Eba
 - **Account Deletion Exemption**: Officially approved in Developer Portal (Opted out under "Not persisting eBay data" exemption).
 
 ### C. Google Gemini AI Vision (Optional in Web App)
-- `index.html` supports Google Gemini 2.0 Flash (`gemini-2.0-flash:generateContent`) for cloud-based AI OCR of shelf photos.
+- `index.html` supports Gemini for cloud-based AI reading of shelf photos. This is the most reliable way to read a shelf or pile of games in a shop.
+- **Model fallback chain** (`GEMINI_MODELS` in `index.html`): `gemini-3.5-flash-lite` -> `gemini-3.5-flash` -> `gemini-2.5-flash-lite` -> `gemini-2.5-flash`. The app walks the list when a model ID returns 404 / "not found". `gemini-2.0-flash` was shut down by Google on 1 June 2026 and must not be used.
+- Photos are re-encoded client-side to JPEG (max 2400px) before upload, so iPhone HEIC photos work.
 - Free API keys are created via Google AI Studio (`https://aistudio.google.com/app/apikey`) and saved in the user's browser `localStorage` under `bulk_gemini_key`.
 
 ---
@@ -70,14 +72,15 @@ The user has an approved eBay Developers Program Production account used by `Eba
 ### A. Web App (`index.html`)
 1. **In-Store Barcode Scanner**: Uses HTML5 Camera API (`Html5Qrcode`) to scan EAN/UPC barcodes directly from physical game cases for instantaneous CeX cash & voucher pricing.
 2. **Profit & ROI Calculator**: Allows entering shop asking price to calculate net cash profit, trade voucher profit, and ROI percentages.
-3. **Bulk Shelf & Stack Photo Scanner**:
-   - **Smart Auto-Orientation Scoring**: Evaluates both 0° (horizontal flat stack) and 270° (vertical shelf spine) using an onboard dictionary of game franchise terms (`scoreText()`), automatically choosing the right orientation.
-   - **Adaptive Image Preprocessing**: Scales images 2x (so small spine fonts exceed 24px) and applies an unsharp mask (`sharpen(ctx, w, h, 0.45)`) with clean grayscale conversion. Dark spines are not crushed to solid black.
-   - **Price Sticker Stripping**: Regex removes store price stickers (`$8`, `$16`, `$12`, `8$`, `12$`).
-   - **Catalog & Serial Cleaner**: Strips `BLES`, `CUSA`, `BCES`, `MW2` codes, platform tags, and rating badges (`MA15+`, `R18+`, `PG`).
-   - **Compound Word Splitter & Typo Normalizer**: Automatically splits fused words (`ghostrecon` -> `ghost recon`, `tombraider` -> `tomb raider`) and fuzzy-corrects OCR glitches (`SIOSHOCK` -> `Bioshock`, `TCRUSE` -> `Just Cause`, `saitiiroNT` -> `Battlefront`).
-   - **Spine Focus & Crop Tool**: Users can trim top ceiling glare and bottom counter reflections before scanning.
-   - **Mobile Live Text Support**: Includes a 1-tap "Paste Copied Spines" button for iOS Apple Live Text and Google Lens clipboard data.
+3. **Bulk Shelf & Stack Photo Scanner** (on-device Tesseract.js, no key needed):
+   - **Shelf band detection** (`detectSpineBand`): finds the horizontal band of the photo with the densest edges (the row of spines) and ignores shelf wood and other shelves above/below.
+   - **Rotate + upscale + tile** (`buildOcrTiles`): rotates the band so spine text reads left-to-right, scales it so the axis across the spines is ~3000px (small PS4 spine fonts become readable), contrast-stretches to grayscale, and splits into <=8.5MP tiles to stay under mobile Safari canvas limits.
+   - **Sparse-text OCR + spine grouping** (`ocrOrientation`, `groupWordsIntoSpines`): runs Tesseract in PSM 11 (sparse text) to get individual word boxes, then groups words whose boxes share the same vertical interval into one line per spine. Whole-image block OCR and per-spine edge segmentation were both tested and rejected (garbage output / unreliable boundaries on dark-on-dark cases).
+   - **Auto orientation**: tries upright spines (270°) first; only runs the flat-stack (0°) pass if fewer than 3 spines were found.
+   - **Title cleaner** (`cleanAndFilterTitles`): splits fused digits (`CAUSE2` -> `CAUSE 2`), strips price stickers, catalog codes (`BLES`, `CUSA`, `MW2`), platform tags and rating badges, fuzzy-corrects common OCR misreads (`Urange Box`, `JUSTCRUSE`), and drops OCR crumbs.
+   - **Expected accuracy**: roughly half to two-thirds of spines read cleanly on a typical shelf photo in ~5-10s on desktop. Titles are dumped into the textarea for review; the Algolia `allOptional` search tolerates leftover noise words. For near-perfect results the user should switch to AI Vision.
+   - **Spine Focus & Crop Tool**: users can trim top ceiling glare and bottom counter reflections before scanning.
+   - **Mobile Live Text Support**: 1-tap "Paste Copied Spines" button for iOS Apple Live Text and Google Lens clipboard data.
 4. **Algolia Gaming-First Search**: Restricts searches to `superCatFriendlyName:Gaming` with `allOptional` words, eliminating false hits on laptops, keyboards, and cables. Includes an automatic fallback pass for movie Blu-rays or specialty sets.
 5. **1-Tap eBay Australia Search Links**: Every item card and table row features direct links to:
    - CeX Sell Page
