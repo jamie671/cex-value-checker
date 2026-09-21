@@ -2004,9 +2004,19 @@
       [/\b(mirr?ors?\s*edge|mirrors?\s*ege)\b/gi, "Mirrors Edge"],
       [/\b(theru\s*auto|theft\s*auro|grand\s*thef)\b/gi, "Theft Auto"],
       [/\b(nunstop|nonstap)\b/gi, "Nonstop"],
+      [/\bhalf\s*-?\s*life\s*[z2]\b/gi, "Half-Life 2"],
+      [/\bhalf\s*-?\s*lifez\b/gi, "Half-Life 2"],
+      [/\b(ac[il\/\\|]*dc|acil|ac\/dc)\s+live\b[^\n]*/gi, "AC/DC Live Rock Band"],
+      [/\brock\s*(end|eand|band)\b/gi, "Rock Band"],
+      [/\bwrest[l1]e\s*mania\b/gi, "WrestleMania"],
       [/\b(wrest\s*ling)\b/gi, "Wrestling"],
       [/\b(toi\s*clancy)\b/gi, "Tom Clancy"]
     ];
+
+    // Whole lines that Live Text / OCR lift off a spine but are never a title.
+    const NOISE_LINE_RX = /^[\s\W]*(xbox(\s*(360|one|series\s*[xs]?))?|playstation\s*[1-5]?|ps[1-5]|nintendo(\s*(switch|wii|ds|3ds))?|wii\s*u?|switch|pal|ntsc|restricted|(ma|r)\s*\d{2}\s*\+?|pg|g|m|dm|oflc|pegi\s*\d*|valve|ea(\s*sports)?|thq|sega|capcom|ubisoft|activision|rockstar(\s*games)?|bethesda|konami|square\s*enix|2k(\s*games|\s*sports)?|warner\s*bros\.?|namco(\s*bandai)?|bandai\s*namco|codemasters|atari|midway|eidos|blu-?ray|dvd|kinect|move|playstation\s*network|xbox\s*live|only\s*on\s*playstation|greatest\s*hits|platinum|classics|essentials|best\s*sellers?|the\s*best|game\s*of\s*the\s*year(\s*edition)?|goty|five\s*games,?\s*one\s*box\.?)[\s\W]*$/i;
+    // Taglines and edition fluff to strip from within a line.
+    const TAGLINE_RX = /\b(five\s*games,?\s*one\s*box|the\s*real\s*riding\s*simulator|the\s*real\s*driving\s*simulator|only\s*on\s*playstation|greatest\s*hits|platinum|classics|essentials|kinect\s*required|move\s*compatible)\b\.?/gi;
 
     function cleanAndFilterTitles(rawText) {
       if (!rawText) return [];
@@ -2016,6 +2026,8 @@
       for (let rawLine of lines) {
         let line = rawLine.trim();
         if (!line || line.length < 3) continue;
+        if (NOISE_LINE_RX.test(line)) continue;
+        if (/^[\W\d]+$/.test(line)) continue; // catalog numbers like "900", "40427", "[PAL)"
 
         // 0. Split letters fused onto a trailing number: "CAUSE2" -> "CAUSE 2", "FIFA20" -> "FIFA 20"
         line = line.replace(/([A-Za-z]{3,})(\d)/g, "$1 $2");
@@ -2029,6 +2041,10 @@
         for (let [rx, repl] of FUZZY_GAME_MAP) {
           line = line.replace(rx, repl);
         }
+
+        // 2b. Strip taglines / edition fluff and bullet separators
+        line = line.replace(TAGLINE_RX, " ");
+        line = line.replace(/[•·▸►▶‣]/g, " ");
 
         // 3. Remove price stickers e.g. "$8", "$16", "$12", "8$", "12$"
         line = line.replace(/[$€£]\s*\d+(\.\d+)?/g, " ");
@@ -2052,10 +2068,13 @@
         while (words.length > 1 && (words[0].length <= 2 && !["of", "in", "on", "to", "at", "ii", "iv", "ea", "2k"].includes(words[0].toLowerCase()))) {
           words.shift();
         }
-        while (words.length > 1 && (words[words.length - 1].length <= 2 && !["ii", "iv", "vi", "2k", "ea", "09", "10", "15", "17", "18"].includes(words[words.length - 1].toLowerCase()))) {
+        const keepTail = (w) => /^\d{1,2}$/.test(w) || /^(ii|iii|iv|vi|vii|ix|xi|x|v)$/i.test(w) || ["2k", "ea", "hd", "3d", "dx", "gt"].includes(w.toLowerCase());
+        while (words.length > 1 && words[words.length - 1].length <= 2 && !keepTail(words[words.length - 1])) {
           words.pop();
         }
         line = words.join(" ").trim();
+        line = line.replace(/\b(restricted|pal|ntsc)\b\.?$/i, "").trim();
+        if (NOISE_LINE_RX.test(line)) continue;
 
         if (line.length < 3) continue;
         if (!/[a-zA-Z]{3,}/.test(line)) continue;
