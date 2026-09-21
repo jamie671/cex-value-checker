@@ -230,7 +230,7 @@
   </div>
 
   <!-- Barcode Scanner Modal -->
-  <div id="scannerModal" class="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col justify-between p-4 hidden">
+  <div id="scannerModal" class="fixed inset-0 z-[60] bg-black/90 backdrop-blur-md flex flex-col justify-between p-4 hidden">
     <div class="flex items-center justify-between text-white pt-2">
       <div class="flex items-center gap-2">
         <i data-lucide="scan-barcode" class="w-5 h-5 text-red-500"></i>
@@ -1255,31 +1255,46 @@
     }
 
     // Barcode Scanner
+    let scannerStopping = null;
     async function startBarcodeScanner() {
       const modal = document.getElementById("scannerModal");
+      const hint = document.getElementById("scannerHint");
       modal.classList.remove("hidden");
+      hint.className = "text-xs text-slate-400 mt-3 text-center";
+      hint.innerText = bulkScanMode ? "Starting camera..." : "Starting camera...";
 
-      if (!html5QrCode) {
-        html5QrCode = new Html5Qrcode("reader");
-      }
+      // If a previous stop() is still finishing (iOS is slow to release the camera), wait for it
+      if (scannerStopping) { try { await scannerStopping; } catch (e) {} scannerStopping = null; }
+      if (!html5QrCode) html5QrCode = new Html5Qrcode("reader");
+      if (html5QrCode.isScanning) { hint.innerText = bulkScanMode ? "Point at each barcode in turn." : "Point phone camera at the barcode on the back of the case."; return; }
 
-      const config = {
-        fps: 15,
-        qrbox: { width: 280, height: 160 },
-        aspectRatio: 1.5
-      };
+      const config = { fps: 15, qrbox: { width: 280, height: 160 }, aspectRatio: 1.5 };
+      const onOk = (decodedText) => { onBarcodeFound(decodedText); };
+      const tryStart = async (cameraConstraint) => html5QrCode.start(cameraConstraint, config, onOk, () => {});
 
       try {
-        await html5QrCode.start(
-          { facingMode: "environment" },
-          config,
-          (decodedText) => {
-            onBarcodeFound(decodedText);
-          },
-          (errorMessage) => {}
-        );
+        try {
+          await tryStart({ facingMode: "environment" });
+        } catch (err1) {
+          console.warn("Camera start failed, retrying with a fresh scanner:", err1);
+          // A stale instance after a previous stop() is the usual culprit: rebuild and try once more
+          try { await html5QrCode.clear(); } catch (e) {}
+          html5QrCode = new Html5Qrcode("reader");
+          try {
+            await tryStart({ facingMode: "environment" });
+          } catch (err2) {
+            // Last resort: let the browser pick any camera
+            await tryStart({ facingMode: "user" });
+          }
+        }
+        hint.innerText = bulkScanMode ? "Point at each barcode in turn. Tap ✕ when you've done the pile." : "Point phone camera at the barcode on the back of the case.";
       } catch (err) {
         console.warn("Camera start error:", err);
+        const msg = String(err && (err.message || err));
+        hint.className = "text-xs text-rose-300 mt-3 text-center font-semibold";
+        hint.innerText = /NotAllowed|denied|permission/i.test(msg)
+          ? "Camera blocked. Allow camera access for this site in Settings, then try again. You can still type the barcode below."
+          : `Camera didn't start (${msg.slice(0, 120)}). Close and try again, or type the barcode below.`;
       }
     }
 
@@ -1287,7 +1302,7 @@
       const modal = document.getElementById("scannerModal");
       modal.classList.add("hidden");
       if (html5QrCode && html5QrCode.isScanning) {
-        html5QrCode.stop().catch(console.error);
+        scannerStopping = html5QrCode.stop().catch(console.error);
       }
       if (bulkScanMode) {
         bulkScanMode = false;
@@ -1305,12 +1320,15 @@
     let bulkScanLastCode = "", bulkScanLastAt = 0;
     function startBulkBarcodeScan() {
       bulkScanMode = true;
+      const p = startBarcodeScanner(); // first thing, so the camera request stays inside the tap gesture
       document.getElementById("scannerTitle").innerText = "Scan barcodes, one after another";
-      document.getElementById("scannerHint").innerText = "Each barcode is added to your list. Tap ✕ when you've done the pile.";
       document.getElementById("bulkScanStatus").classList.remove("hidden");
-      const existing = parseSpineDump(document.getElementById("lotTextarea").value).filter(it => it.gtin).length;
-      document.getElementById("bulkScanCount").innerText = existing;
-      startBarcodeScanner();
+      try {
+        const existing = parseSpineDump(document.getElementById("lotTextarea").value).filter(it => it.gtin).length;
+        document.getElementById("bulkScanCount").innerText = existing;
+        document.getElementById("bulkScanLast").innerText = existing ? `${existing} already in the list` : "Keep scanning, tap ✕ when done";
+      } catch (e) { console.warn(e); }
+      return p;
     }
     function addScannedCode(code) {
       const digits = String(code).replace(/\D/g, "");
@@ -2844,7 +2862,7 @@
       if (!wrap || !bar) return;
       wrap.classList.remove("hidden"); bar.classList.add("hidden");
       if (scanAnother) {
-        setTimeout(() => document.getElementById("bulkCameraInput")?.click(), 50);
+        document.getElementById("bulkCameraInput")?.click();
       } else {
         const ta = document.getElementById("lotTextarea");
         ta.scrollIntoView({ behavior: "smooth", block: "center" });
