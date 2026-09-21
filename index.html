@@ -1410,6 +1410,15 @@
       </div>
 
       <div class="p-4 space-y-3 overflow-y-auto flex-1">
+        <!-- Collapsed setup bar (shown once results exist) -->
+        <div id="lotSetupCollapsed" class="hidden flex items-center justify-between gap-2 bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2">
+          <div class="text-[11px] text-slate-300"><span id="lotSetupSummary" class="font-bold text-white">0 titles</span> <span class="text-slate-500">in your list</span></div>
+          <div class="flex items-center gap-2">
+            <button type="button" onclick="expandLotSetup(false)" class="text-[11px] font-bold text-slate-300 hover:text-white bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1">Edit list</button>
+            <button type="button" onclick="expandLotSetup(true)" class="text-[11px] font-bold text-white bg-purple-600 hover:bg-purple-500 rounded-lg px-2.5 py-1 flex items-center gap-1"><i data-lucide="camera" class="w-3 h-3"></i>Scan another</button>
+          </div>
+        </div>
+        <div id="lotSetupWrap" class="space-y-3">
         <!-- Local Spine Scanner Action Bar (Option 2) -->
         <!-- Spine Scanner Engine Selector & Action Bar -->
         <div class="bg-slate-950/80 border border-slate-800 rounded-2xl p-3 space-y-2.5 shadow-inner">
@@ -1427,7 +1436,9 @@
             </div>
             
             <!-- Orientation Selector (Visible in Local Mode) -->
-            <div id="bulkOrientationWrap" class="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 text-[11px]">
+            <details id="bulkOrientationWrap" class="text-[11px]">
+              <summary class="cursor-pointer list-none text-slate-500 hover:text-slate-300 select-none px-1 py-1">Advanced ▾</summary>
+              <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 mt-1">
               <span class="text-slate-400 text-[10px] pl-1 font-medium">Layout:</span>
               <select id="bulkOrientationSelect" class="bg-slate-950 border border-slate-700 text-white rounded-lg px-2 py-0.5 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-purple-500">
                 <option value="auto" selected>✨ Auto-Detect (Flat or Upright)</option>
@@ -1436,7 +1447,8 @@
                 <option value="90">🔄 Spines Facing Left</option>
                 <option value="180">🔃 Upside Down</option>
               </select>
-            </div>
+              </div>
+            </details>
           </div>
 
           <!-- Free Gemini API Key Input (Shown only in AI Vision Mode) -->
@@ -1545,7 +1557,7 @@
             <div class="flex items-center gap-3">
               <button type="button" onclick="pasteFromClipboard()" class="text-[11px] text-purple-400 hover:text-purple-300 font-bold flex items-center gap-1 cursor-pointer">
                 <i data-lucide="clipboard" class="w-3.5 h-3.5"></i>
-                <span>Paste Copied Spines</span>
+                <span>Paste Live Text</span>
               </button>
               <button type="button" onclick="tidyLotText()" class="text-[11px] text-emerald-400 hover:text-emerald-300 font-bold flex items-center gap-1 cursor-pointer">
                 <i data-lucide="wand-2" class="w-3 h-3"></i>
@@ -1560,18 +1572,19 @@
                     class="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-purple-500 font-mono"></textarea>
           <p id="lotTidyStatus" class="text-[10px] text-slate-500 mt-1">Paste a Live Text dump or photo scan as-is. Tidy Text turns it into one "Title | Platform" per line.</p>
           
-          <!-- Mobile Live Text Helper -->
-          <div class="mt-2 bg-slate-900/60 border border-slate-800/80 rounded-xl p-2.5 text-[11px] text-slate-400 space-y-1">
-            <div class="font-bold text-slate-300 flex items-center gap-1.5">
+          <details class="mt-2 text-[11px] text-slate-400 group">
+            <summary class="cursor-pointer list-none flex items-center gap-1.5 text-slate-400 hover:text-slate-200 select-none">
               <i data-lucide="smartphone" class="w-3.5 h-3.5 text-purple-400"></i>
-              <span>Mobile Pro-Tip (Zero Setup):</span>
-            </div>
-            <p class="leading-normal text-slate-400">
-              <strong class="text-slate-200">iPhone / iPad:</strong> In Apple Photos, open your photo, tap the <span class="text-purple-300 font-semibold">Live Text</span> icon in the bottom-right corner, swipe across spines to copy, and paste directly above.
+              <span>How do I copy spines with Live Text?</span>
+              <i data-lucide="chevron-down" class="w-3 h-3 group-open:rotate-180 transition"></i>
+            </summary>
+            <p class="mt-1.5 leading-normal bg-slate-900/60 border border-slate-800/80 rounded-xl p-2.5">
+              <strong class="text-slate-200">iPhone:</strong> open the photo in Photos, tap the <span class="text-purple-300 font-semibold">Live Text</span> icon (bottom-right), tap <strong class="text-slate-200">Select All</strong>, then <strong class="text-slate-200">Copy</strong>. Come back here and tap <strong class="text-slate-200">Paste Live Text</strong>. Keep the "XBOX 360" style lines, they tell the app which platform to price against.
             </p>
-          </div>
+          </details>
         </div>
 
+        </div>
         <div class="flex items-center justify-between gap-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800">
           <div>
             <div class="text-xs font-bold text-slate-200">Seller Asking Price for Bulk:</div>
@@ -1610,21 +1623,8 @@
             </div>
           </div>
 
-          <!-- Items Table -->
-          <div class="max-h-64 overflow-y-auto border border-slate-800 rounded-xl bg-slate-950/50">
-            <table class="min-w-full divide-y divide-slate-800 text-[11px]">
-              <thead class="bg-slate-900 text-slate-400 sticky top-0">
-                <tr>
-                  <th class="p-2 text-left">Item Title & eBay Link</th>
-                  <th class="p-2 text-right text-emerald-400">Cash</th>
-                  <th class="p-2 text-right text-blue-400">Trade</th>
-                  <th class="p-2 text-right text-slate-400">CeX Sells</th>
-                </tr>
-              </thead>
-              <tbody id="lotTableBody" class="divide-y divide-slate-900 text-slate-200">
-              </tbody>
-            </table>
-          </div>
+          <!-- Result cards: needs-attention first -->
+          <div id="lotTableBody" class="space-y-2"></div>
         </div>
       </div>
     </div>
@@ -2526,7 +2526,7 @@
       const resArea = document.getElementById("lotResultsArea");
       const tbody = document.getElementById("lotTableBody");
       resArea.classList.remove("hidden");
-      const setBusy = (msg) => { tbody.innerHTML = `<tr><td colspan="4" class="text-center p-4 text-slate-400">${msg}</td></tr>`; };
+      const setBusy = (msg) => { tbody.innerHTML = `<div class="text-center p-4 text-slate-400 text-xs flex items-center justify-center gap-2"><span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span>${msg}</div>`; };
       setBusy(`Pricing ${items.length} items on CeX Australia...`);
 
       try {
@@ -2608,10 +2608,46 @@
 
         lotState.items = priced;
         renderLotTable();
+        collapseLotSetup();
+        document.getElementById("lotResultsArea").scrollIntoView({ behavior: "smooth", block: "start" });
       } catch (err) {
         console.error(err);
         alert("Error pricing bulk items. Check internet connection.");
       }
+    }
+
+    // ---- Setup panel collapse (after results exist the form gets out of the way) ----
+    function collapseLotSetup() {
+      const wrap = document.getElementById("lotSetupWrap"), bar = document.getElementById("lotSetupCollapsed");
+      if (!wrap || !bar) return;
+      wrap.classList.add("hidden"); bar.classList.remove("hidden");
+      const n = lotState.items.length;
+      document.getElementById("lotSetupSummary").innerText = `${n} title${n === 1 ? "" : "s"}`;
+      if (window.lucide && lucide.createIcons) lucide.createIcons();
+    }
+    function expandLotSetup(scanAnother) {
+      const wrap = document.getElementById("lotSetupWrap"), bar = document.getElementById("lotSetupCollapsed");
+      if (!wrap || !bar) return;
+      wrap.classList.remove("hidden"); bar.classList.add("hidden");
+      if (scanAnother) {
+        setTimeout(() => document.getElementById("bulkCameraInput")?.click(), 50);
+      } else {
+        const ta = document.getElementById("lotTextarea");
+        ta.scrollIntoView({ behavior: "smooth", block: "center" });
+        ta.focus();
+      }
+    }
+
+    // Keep the textarea in step with fixes made on the cards, so re-running Calculate keeps them.
+    function syncLotTextarea() {
+      const lines = lotState.items.map(it => {
+        const title = it.found ? it.name : it.rawTitle;
+        return it.platform ? `${title} | ${it.platform}` : title;
+      });
+      document.getElementById("lotTextarea").value = lines.join("\n");
+      const n = lotState.items.length;
+      const sum = document.getElementById("lotSetupSummary");
+      if (sum) sum.innerText = `${n} title${n === 1 ? "" : "s"}`;
     }
 
     // Swap a row for one of its alternative matches (user confirms the right game)
@@ -2623,73 +2659,111 @@
       item.name = alt.n; item.cash = alt.c; item.voucher = alt.v; item.sell = alt.s; item.found = true;
       item.url = `https://au.webuy.com/sell/product-detail?id=${alt.id}`; item.year = extractYear(alt.n);
       if (alt.category) item.category = alt.category;
-      item.confidence = "high"; item.score = 1;
+      item.confidence = "high"; item.score = 1; item.confirmed = true;
+      syncLotTextarea();
+      renderLotTable();
+    }
+    // Accept the current match on an amber row without changing it
+    function confirmLotItem(idx) {
+      const item = lotState.items[idx];
+      if (!item) return;
+      item.confidence = "high"; item.confirmed = true;
+      renderLotTable();
+    }
+    // Remove a junk row entirely
+    function removeLotItem(idx) {
+      lotState.items.splice(idx, 1);
+      syncLotTextarea();
       renderLotTable();
     }
 
+    const money = (v) => `$${(v || 0).toFixed(2)}`;
+
     function renderLotTable() {
       const items = lotState.items;
-      const sorted = items.map((it, i) => ({ it, i })).sort((a, b) => b.it.cash - a.it.cash);
+      const rank = (it) => !it.found ? 0 : (it.confidence === "check" ? 1 : 2);
+      const sorted = items.map((it, i) => ({ it, i })).sort((a, b) => (rank(a.it) - rank(b.it)) || (b.it.cash - a.it.cash));
       let totalCash = 0, totalVoucher = 0, foundCount = 0, checkCount = 0, missCount = 0;
       for (const it of items) {
         if (it.found) { totalCash += it.cash; totalVoucher += it.voucher; foundCount++; }
-        if (it.confidence === "check") checkCount++;
+        if (it.found && it.confidence === "check") checkCount++;
         if (!it.found) missCount++;
       }
+      const pending = checkCount + missCount;
       document.getElementById("lotCount").innerText = `${foundCount}${items.length !== foundCount ? ` / ${items.length}` : ""}`;
-      document.getElementById("lotTotalCash").innerText = `$${totalCash.toFixed(2)}`;
-      document.getElementById("lotTotalVoucher").innerText = `$${totalVoucher.toFixed(2)}`;
+      document.getElementById("lotTotalCash").innerText = money(totalCash);
+      document.getElementById("lotTotalVoucher").innerText = money(totalVoucher);
       const netCash = totalCash - lotState.askingPrice;
-      document.getElementById("lotNetProfit").innerText = `${netCash >= 0 ? '+' : ''}$${netCash.toFixed(2)}`;
-      document.getElementById("lotNetProfit").className = `text-base font-black ${netCash >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+      const netEl = document.getElementById("lotNetProfit");
+      netEl.innerText = `${netCash >= 0 ? '+' : '-'}$${Math.abs(netCash).toFixed(2)}`;
+      // Grey the net out while rows still need a decision; it isn't final yet
+      netEl.className = `text-base font-black ${pending ? 'text-slate-500' : (netCash >= 0 ? 'text-emerald-400' : 'text-rose-400')}`;
+      netEl.title = pending ? `${pending} row(s) still need checking` : `Cash payout ${money(totalCash)} minus asking ${money(lotState.askingPrice)}`;
 
-      const badge = (item) => {
+      const chip = (txt, cls) => `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${cls}">${txt}</span>`;
+      const platformChip = (item) => {
         const pf = item.found && item.category ? item.category.replace(/\s*(Games|Software)$/, "") : item.platform;
-        let html = pf ? `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-bold">${escapeHtml(pf)}</span>` : "";
-        if (item.confidence === "check") html += `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-700/40 text-[9px] font-bold">Check match</span>`;
-        if (!item.found) html += `<span class="px-1.5 py-0.5 rounded bg-rose-950/60 text-rose-400 border border-rose-800/40 text-[9px] font-bold">Not matched</span>`;
-        return html;
+        return pf ? chip(escapeHtml(pf), "bg-slate-800 text-slate-300") : "";
       };
-      const altChips = (item, idx) => {
-        if (!item.alts || !item.alts.length) return "";
-        const label = item.found ? "Or:" : "Did you mean:";
-        return `<div class="mt-1 flex items-center gap-1 flex-wrap text-[10px]"><span class="text-slate-500">${label}</span>${item.alts.slice(0, 3).map((a, ai) =>
-          `<button type="button" onclick="swapLotItem(${idx}, ${ai})" class="px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900 text-slate-300 hover:border-purple-500 hover:text-white">${escapeHtml(a.n)}</button>`).join("")}</div>`;
+      const ebayLinks = (item) => {
+        const name = item.name || item.rawTitle;
+        const sold = getEbaySearchUrl(name, item.category, "", true), low = getEbaySearchUrl(name, item.category, "", true, "lowest"), high = getEbaySearchUrl(name, item.category, "", true, "highest");
+        return `<details class="mt-1.5"><summary class="list-none cursor-pointer inline-flex items-center gap-1 text-[10px] font-bold text-blue-400 hover:text-blue-300 select-none"><i data-lucide="shopping-bag" class="w-3 h-3"></i>eBay comps <i data-lucide="chevron-down" class="w-3 h-3"></i></summary>
+          <div class="mt-1 flex items-center gap-1.5 flex-wrap">
+            <a href="${sold}" target="_blank" class="text-[10px] font-bold text-blue-300 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-800/40">90d Sold</a>
+            <a href="${low}" target="_blank" class="text-[10px] font-bold text-emerald-300 bg-slate-800 px-2 py-0.5 rounded border border-emerald-900/40">Lowest</a>
+            <a href="${high}" target="_blank" class="text-[10px] font-bold text-purple-300 bg-slate-800 px-2 py-0.5 rounded border border-purple-900/40">Highest</a>
+          </div></details>`;
+      };
+      const altPicker = (item, idx) => {
+        const alts = (item.alts || []).slice(0, 3);
+        if (!alts.length && item.found) return "";
+        const head = item.found ? "Not this one? Pick the right game:" : "Did you mean one of these?";
+        const rows = alts.map((a, ai) => `
+          <button type="button" onclick="swapLotItem(${idx}, ${ai})" class="w-full flex items-center justify-between gap-2 text-left px-2.5 py-1.5 rounded-lg border border-slate-700 bg-slate-900 hover:border-purple-500 hover:bg-slate-800 active:scale-[0.99] transition">
+            <span class="text-[11px] text-slate-200 font-medium truncate">${escapeHtml(a.n)}</span>
+            <span class="text-[11px] font-bold text-emerald-400 shrink-0">${money(a.c)} <span class="text-slate-500 font-normal">cash</span></span>
+          </button>`).join("");
+        const keep = item.found ? `<button type="button" onclick="confirmLotItem(${idx})" class="w-full text-center px-2.5 py-1.5 rounded-lg border border-emerald-800/50 bg-emerald-950/30 text-[11px] font-bold text-emerald-300 hover:bg-emerald-950/60">✓ Keep ${escapeHtml(item.name)}</button>` : "";
+        return `<div class="mt-2 space-y-1"><div class="text-[10px] text-slate-400">${head}</div>${rows}${keep}</div>`;
       };
 
-      document.getElementById("lotTableBody").innerHTML = sorted.map(({ it: item, i: idx }) => {
-        const ebaySoldUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true);
-        const ebaySoldLowUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true, "lowest");
-        const ebaySoldHighUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true, "highest");
-        const rowTint = !item.found ? "bg-rose-950/10" : (item.confidence === "check" ? "bg-amber-950/10" : "");
+      const cards = sorted.map(({ it: item, i: idx }) => {
+        const state = !item.found ? "none" : (item.confidence === "check" ? "check" : "ok");
+        const border = state === "none" ? "border-rose-800/50" : (state === "check" ? "border-amber-700/50" : "border-slate-800");
+        const status = state === "none" ? chip("Not matched", "bg-rose-950/60 text-rose-300 border border-rose-800/40")
+                     : state === "check" ? chip("Check match", "bg-amber-500/15 text-amber-300 border border-amber-700/40")
+                     : (item.confirmed ? chip("✓ Confirmed", "bg-emerald-950/50 text-emerald-300 border border-emerald-800/40") : "");
+        const readAs = item.found && item.rawTitle && matchNorm(item.rawTitle) !== matchNorm(item.name) ? `<div class="text-[10px] text-slate-500 truncate">read as "${escapeHtml(item.rawTitle)}"</div>` : "";
+        const title = item.found
+          ? `<a href="${item.url}" target="_blank" class="text-[13px] font-bold text-white hover:text-blue-300 hover:underline leading-tight">${escapeHtml(item.name)}</a>`
+          : `<span class="text-[13px] font-bold text-rose-200 leading-tight">${escapeHtml(item.rawTitle)}</span>`;
+        const priceLine = item.found
+          ? `<div class="flex items-baseline gap-3 mt-1 text-[11px] flex-wrap">
+               <span><span class="text-emerald-400 font-black text-[13px]">${money(item.cash)}</span> <span class="text-slate-500">cash</span></span>
+               <span><span class="text-blue-400 font-bold">${money(item.voucher)}</span> <span class="text-slate-500">trade</span></span>
+               <span class="text-slate-400">CeX sells ${item.sell > 0 ? money(item.sell) : "-"}</span>
+             </div>`
+          : `<div class="text-[11px] text-slate-500 mt-1">Not counted in totals</div>`;
         return `
-          <tr class="hover:bg-slate-900/60 border-b border-slate-900 ${rowTint}">
-            <td class="p-2 font-medium">
-              <div class="flex items-center gap-1.5 flex-wrap">
-                ${item.found ? `<a href="${item.url}" target="_blank" class="hover:text-blue-400 hover:underline text-white font-semibold">${escapeHtml(item.name)}</a>`
-                             : `<span class="text-rose-300 font-semibold">${escapeHtml(item.name)}</span>`}
-                ${badge(item)}
-                ${item.year ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">📅 ${item.year}</span>` : ''}
+          <div class="bg-slate-950/70 border ${border} rounded-xl p-3">
+            <div class="flex items-start gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5 flex-wrap">${title}${platformChip(item)}${status}${item.year ? chip(`📅 ${item.year}`, "bg-amber-500/15 text-amber-300") : ""}</div>
+                ${readAs}
+                ${priceLine}
               </div>
-              ${item.found && item.rawTitle && matchNorm(item.rawTitle) !== matchNorm(item.name) ? `<div class="text-[10px] text-slate-500 mt-0.5">read as "${escapeHtml(item.rawTitle)}"</div>` : ''}
-              ${altChips(item, idx)}
-              <div class="mt-1 flex items-center gap-1.5 flex-wrap">
-                <a href="${ebaySoldUrl}" target="_blank" class="inline-flex items-center gap-1 text-[10px] font-bold ${
-                  item.found ? 'text-blue-400 hover:text-blue-300 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-800/40' : 'text-white bg-blue-600 hover:bg-blue-500 px-2 py-0.5 rounded shadow-sm shadow-blue-600/30'
-                }">
-                  <i data-lucide="shopping-bag" class="w-3 h-3"></i>
-                  <span>${item.found ? '90d Sold' : 'Check 90d Sold'}</span>
-                  <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-70"></i>
-                </a>
-                <a href="${ebaySoldLowUrl}" target="_blank" class="inline-flex items-center gap-0.5 text-[9px] font-bold text-emerald-300 bg-slate-800 px-1.5 py-0.5 rounded border border-emerald-900/40 hover:bg-slate-700"><span>Low</span></a>
-                <a href="${ebaySoldHighUrl}" target="_blank" class="inline-flex items-center gap-0.5 text-[9px] font-bold text-purple-300 bg-slate-800 px-1.5 py-0.5 rounded border border-purple-900/40 hover:bg-slate-700"><span>High</span></a>
-              </div>
-            </td>
-            <td class="p-2 text-right font-bold text-emerald-400">${item.cash > 0 ? `$${item.cash.toFixed(2)}` : '<span class="text-slate-600">$0.00</span>'}</td>
-            <td class="p-2 text-right font-bold text-blue-400">${item.voucher > 0 ? `$${item.voucher.toFixed(2)}` : '<span class="text-slate-600">$0.00</span>'}</td>
-            <td class="p-2 text-right text-slate-400">${item.sell > 0 ? `$${item.sell.toFixed(2)}` : '<span class="text-slate-600">-</span>'}</td>
-          </tr>`;
-      }).join("") + ((checkCount || missCount) ? `<tr><td colspan="4" class="p-2 text-[10px] text-slate-500 text-center">${checkCount ? `${checkCount} amber row(s): tap an "Or:" option if the wrong game was picked. ` : ""}${missCount ? `${missCount} red row(s) weren't matched and aren't counted in totals; tap a suggestion or fix the title above.` : ""}</td></tr>` : "");
+              <button type="button" onclick="removeLotItem(${idx})" title="Remove" class="shrink-0 w-7 h-7 rounded-full bg-slate-900 border border-slate-800 text-slate-500 hover:text-rose-300 hover:border-rose-800 flex items-center justify-center"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+            </div>
+            ${altPicker(item, idx)}
+            ${item.found ? ebayLinks(item) : ""}
+          </div>`;
+      }).join("");
+
+      const summary = pending
+        ? `<div class="text-[10px] text-slate-400 text-center px-2">${missCount ? `<span class="text-rose-300 font-bold">${missCount}</span> unmatched` : ""}${missCount && checkCount ? " · " : ""}${checkCount ? `<span class="text-amber-300 font-bold">${checkCount}</span> to check` : ""} · fix or remove them to finalise the net profit</div>`
+        : (items.length ? `<div class="text-[10px] text-emerald-400 text-center">All ${items.length} matched. Totals are final.</div>` : "");
+      document.getElementById("lotTableBody").innerHTML = summary + cards;
       lucide.createIcons();
     }
 </script>
