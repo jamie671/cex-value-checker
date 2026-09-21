@@ -4,3 +4,7 @@ ebay_config.json
 __pycache__/
 *.pyc
 .DS_Store
+
+# Cloudflare Worker local state
+worker/.wrangler/
+worker/node_modules/

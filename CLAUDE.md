@@ -28,7 +28,10 @@ cex-value-checker/
 ├── icon-192.png         # PWA home screen app icon (192x192)
 ├── icon-512.png         # High-res splash icon (512x512)
 ├── qr_code.png          # QR code for opening the web app on mobile devices
-└── README.md            # Public project README
+├── README.md            # Public project README
+└── worker/              # Cloudflare Worker: eBay AU price proxy (holds eBay secrets, see 3.D)
+    ├── wrangler.jsonc
+    └── src/index.js
 ```
 
 > **IMPORTANT**:
@@ -65,6 +68,17 @@ The user has an approved eBay Developers Program Production account used by `Eba
 - Photos are re-encoded client-side to JPEG (max 2400px) before upload, so iPhone HEIC photos work.
 - Free API keys are created via Google AI Studio (`https://aistudio.google.com/app/apikey`) and saved in the user's browser `localStorage` under `bulk_gemini_key`.
 
+### D. eBay price proxy (Cloudflare Worker `cex-ebay-proxy`)
+The browser cannot call eBay directly (CORS + secret exposure), so `worker/` is a Cloudflare Worker on Jamie's account (`vultr2@searchjam.com.au`, account `d1198f265e73764b9258bb2f95576eb5`) that holds the eBay credentials as Worker secrets and returns clean price stats.
+- **URL**: `https://cex-ebay-proxy.vultr2.workers.dev` (constant `EBAY_PROXY_URL` in `index.html`)
+- **Route**: `GET /ebay/search?gtin=<8-14 digits>` or `GET /ebay/search?q=<text>&cat=books|movies|music|games` (`limit` 1-50, default 40). `/health` for a ping.
+- **Response**: `{ count, returned, low, p25, median, p75, avg, currency, items:[{title,price,shipping,shippingKnown,total,condition,buying,url,image}], cached }`. Totals include postage to AU. Stats use fixed-price/best-offer listings when >= 3 exist (auctions distort "low").
+- **Secrets**: `EBAY_APP_ID`, `EBAY_CERT_ID` set with `npx wrangler secret put` from `ebay_config.json`. Never in the repo.
+- **CORS**: allows `https://jamie671.github.io` and `http://localhost:*`.
+- **Cache**: edge-cached 1h per (gtin|q, cat, limit). eBay allows ~5,000 Browse calls/day.
+- **Limits**: Browse API = *active* listings only. eBay's sold-price API (Marketplace Insights) needs separate approval Jamie does not have. eBay category IDs: Books 267, Movies & TV 11232, Music 11233, Video Games 139973.
+- **Deploy**: `cd worker && npx wrangler deploy` (Wrangler is installed and logged in on Jamie's Mac).
+
 ---
 
 ## 4. Completed Work & Technical Solutions
@@ -86,6 +100,11 @@ The user has an approved eBay Developers Program Production account used by `Eba
    - **Fragment merging**: adjacent lines on the same platform are re-scored as one string; if the merged string beats both parts by 0.12 and scores >= 0.45 they are merged ("EUS EX MANKIND" + "DIVIDED" -> Deus Ex: Mankind Divided).
    - **Results UI** (`renderLotTable`, `lotState`): one card per game, sorted needs-attention first (red Not matched, amber Check match, then confident by cash). Amber/red cards show a picker of alternatives with cash prices (`swapLotItem`), a "Keep" button (`confirmLotItem`) and an X to remove (`removeLotItem`). Every change is written back to the textarea as "Title | Platform" (`syncLotTextarea`) so re-running Calculate keeps fixes. Net profit is greyed while any card is unresolved. After Calculate the setup form collapses to a one-line bar (`collapseLotSetup` / `expandLotSetup`: "Edit list" / "Scan another"). eBay links sit behind a per-card "eBay comps" disclosure; the Layout selector lives under an "Advanced" fold; the Live Text how-to is a collapsed disclosure.
    - Items with no detected platform fall back to a live Algolia Gaming search (top 3 hits, first shown, rest as alternatives). Algolia `optionalFilters` was tested for platform steering and did not reliably reorder results.
+3b. **Pricing modes & buy verdict** (`LOT_MODES`, `setLotMode`, `computeVerdict`, `ebayLookup`): the bulk evaluator has a Games / Movies / Books / Music mode bar (persisted in `localStorage.lot_mode`).
+   - **Barcodes**: "Scan Barcodes" reuses the html5-qrcode scanner in a continuous bulk mode (`startBulkBarcodeScan`, `addScannedCode`), appending each EAN/UPC/ISBN as a digit-only line. `parseSpineDump` turns 8-14 digit lines into `{gtin}` items. CeX `boxId` is the EAN, so a barcode is an exact Algolia query across all categories; eBay is queried by `gtin` (exact).
+   - **CeX per mode**: games = catalog fuzzy match; movies = live Algolia search filtered to `superCatFriendlyName:"Film & TV"` (CeX stocks Blu-ray, effectively no DVDs, so DVD items get no CeX route); books/music = none.
+   - **eBay for everything** via the Worker (concurrency 4). Sell estimate = `low` for barcode items (exact product), `p25` for text searches (robust to junk cheap listings). `ebayNet = sell*(1-0.134) - 0.30 - postage - shopPrice`; `cexNet = cash - shopPrice`. Verdict: best net >= $4 BUY, >= $0 Marginal, else Leave; "No price data" when neither source has anything. Best route (CeX cash vs eBay) is shown per card.
+   - **Settings**: shop price per item and postage-you-pay (persisted in `lot_settings`); bulk asking price only in Games mode. Media modes sort cards Buy -> Marginal -> Leave -> no data and relabel the tiles (Items / Worth buying / Sell value / Est. profit).
 4. **Algolia Gaming-First Search**: Restricts searches to `superCatFriendlyName:Gaming` with `allOptional` words, eliminating false hits on laptops, keyboards, and cables. Includes an automatic fallback pass for movie Blu-rays or specialty sets.
 5. **1-Tap eBay Australia Search Links**: Every item card and table row features direct links to:
    - CeX Sell Page

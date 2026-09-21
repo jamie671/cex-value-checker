@@ -234,7 +234,7 @@
     <div class="flex items-center justify-between text-white pt-2">
       <div class="flex items-center gap-2">
         <i data-lucide="scan-barcode" class="w-5 h-5 text-red-500"></i>
-        <h3 class="text-sm font-bold">Scan Product Barcode</h3>
+        <h3 class="text-sm font-bold" id="scannerTitle">Scan Product Barcode</h3>
       </div>
       <button id="btnCloseScanner" class="w-8 h-8 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center hover:bg-slate-700">
         <i data-lucide="x" class="w-5 h-5"></i>
@@ -243,9 +243,13 @@
 
     <div class="flex-1 flex flex-col items-center justify-center max-w-sm mx-auto w-full my-4">
       <div id="reader" class="w-full bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative"></div>
-      <p class="text-xs text-slate-400 mt-3 text-center">
+      <p class="text-xs text-slate-400 mt-3 text-center" id="scannerHint">
         Point phone camera at the barcode on the back of the case.
       </p>
+      <div id="bulkScanStatus" class="hidden mt-3 w-full bg-slate-900/90 border border-emerald-800/50 rounded-xl px-3 py-2 text-center">
+        <div class="text-emerald-300 font-bold text-sm"><span id="bulkScanCount">0</span> scanned</div>
+        <div id="bulkScanLast" class="text-[11px] text-slate-400 truncate">Keep scanning, tap ✕ when done</div>
+      </div>
     </div>
 
     <div class="max-w-sm mx-auto w-full pb-4 space-y-2">
@@ -1285,9 +1289,51 @@
       if (html5QrCode && html5QrCode.isScanning) {
         html5QrCode.stop().catch(console.error);
       }
+      if (bulkScanMode) {
+        bulkScanMode = false;
+        document.getElementById("scannerTitle").innerText = "Scan Product Barcode";
+        document.getElementById("scannerHint").innerText = "Point phone camera at the barcode on the back of the case.";
+        document.getElementById("bulkScanStatus").classList.add("hidden");
+        const st = document.getElementById("lotTidyStatus");
+        const n = parseSpineDump(document.getElementById("lotTextarea").value).filter(it => it.gtin).length;
+        if (st && n) { st.innerText = `${n} barcode${n === 1 ? "" : "s"} in your list. Tap Calculate to price them.`; st.className = "text-[10px] text-emerald-400"; }
+      }
+    }
+
+    // ---- Bulk barcode scanning (many items in a row, into the bulk list) ----
+    let bulkScanMode = false;
+    let bulkScanLastCode = "", bulkScanLastAt = 0;
+    function startBulkBarcodeScan() {
+      bulkScanMode = true;
+      document.getElementById("scannerTitle").innerText = "Scan barcodes, one after another";
+      document.getElementById("scannerHint").innerText = "Each barcode is added to your list. Tap ✕ when you've done the pile.";
+      document.getElementById("bulkScanStatus").classList.remove("hidden");
+      const existing = parseSpineDump(document.getElementById("lotTextarea").value).filter(it => it.gtin).length;
+      document.getElementById("bulkScanCount").innerText = existing;
+      startBarcodeScanner();
+    }
+    function addScannedCode(code) {
+      const digits = String(code).replace(/\D/g, "");
+      if (digits.length < 8 || digits.length > 14) return;
+      const now = Date.now();
+      if (digits === bulkScanLastCode && now - bulkScanLastAt < 2500) return; // same code still in view
+      bulkScanLastCode = digits; bulkScanLastAt = now;
+      const ta = document.getElementById("lotTextarea");
+      const lines = ta.value.split("\n").map(l => l.trim()).filter(Boolean);
+      if (lines.some(l => l.replace(/\D/g, "") === digits && /^\D*\d[\d\s-]*\d\D*$/.test(l))) {
+        document.getElementById("bulkScanLast").innerText = `Already have ${digits}`;
+        if (navigator.vibrate) navigator.vibrate([60, 60, 60]);
+        return;
+      }
+      lines.push(digits);
+      ta.value = lines.join("\n");
+      if (navigator.vibrate) navigator.vibrate(120);
+      document.getElementById("bulkScanCount").innerText = lines.filter(l => /^\d{8,14}$/.test(l)).length;
+      document.getElementById("bulkScanLast").innerText = `Added ${digits}`;
     }
 
     async function onBarcodeFound(code) {
+      if (bulkScanMode) { addScannedCode(code); return; }
       stopBarcodeScanner();
       if (navigator.vibrate) navigator.vibrate(200);
 
@@ -1401,7 +1447,7 @@
           </div>
           <div>
             <h3 class="text-sm font-bold text-white">Bulk Profit Evaluator</h3>
-            <p class="text-[11px] text-slate-400">Take a photo of a shelf or paste titles to price on CeX & eBay</p>
+            <p class="text-[11px] text-slate-400">Scan barcodes or photograph spines. Prices from CeX & eBay AU with a buy verdict.</p>
           </div>
         </div>
         <button onclick="closeLotModal()" class="w-8 h-8 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center">
@@ -1419,6 +1465,13 @@
           </div>
         </div>
         <div id="lotSetupWrap" class="space-y-3">
+        <!-- What are we pricing? -->
+        <div class="grid grid-cols-4 gap-1 bg-slate-950/80 border border-slate-800 rounded-xl p-1 text-[11px]" id="lotModeBar">
+          <button type="button" onclick="setLotMode('games')" data-mode="games" class="py-1.5 rounded-lg font-bold transition">🎮 Games</button>
+          <button type="button" onclick="setLotMode('movies')" data-mode="movies" class="py-1.5 rounded-lg font-bold transition">🎬 Movies</button>
+          <button type="button" onclick="setLotMode('books')" data-mode="books" class="py-1.5 rounded-lg font-bold transition">📚 Books</button>
+          <button type="button" onclick="setLotMode('music')" data-mode="music" class="py-1.5 rounded-lg font-bold transition">💿 Music</button>
+        </div>
         <!-- Local Spine Scanner Action Bar (Option 2) -->
         <!-- Spine Scanner Engine Selector & Action Bar -->
         <div class="bg-slate-950/80 border border-slate-800 rounded-2xl p-3 space-y-2.5 shadow-inner">
@@ -1470,7 +1523,7 @@
           </div>
 
           <!-- Action Buttons: Take Photo & Library -->
-          <div class="grid grid-cols-2 gap-2 pt-0.5">
+          <div class="grid grid-cols-3 gap-2 pt-0.5">
             <!-- Hidden inputs: capture="environment" forces camera on mobile -->
             <input type="file" id="bulkCameraInput" accept="image/*" capture="environment" class="hidden" onchange="handleBulkImageUpload(this)">
             <input type="file" id="bulkGalleryInput" accept="image/*" class="hidden" onchange="handleBulkImageUpload(this)">
@@ -1479,14 +1532,21 @@
             <button type="button" onclick="document.getElementById('bulkCameraInput').click()"
                     class="py-2.5 px-3 bg-purple-600 hover:bg-purple-500 active:scale-95 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-md shadow-purple-600/30 transition cursor-pointer">
               <i data-lucide="camera" class="w-4 h-4"></i>
-              <span>Take Photo</span>
+              <span>Photo</span>
             </button>
 
             <!-- 2. Choose from Photo Library Button -->
             <button type="button" onclick="document.getElementById('bulkGalleryInput').click()"
                     class="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 font-bold rounded-xl text-xs flex items-center justify-center gap-2 border border-slate-700 transition cursor-pointer">
               <i data-lucide="image" class="w-4 h-4 text-purple-400"></i>
-              <span>Choose from Library</span>
+              <span>Library</span>
+            </button>
+
+            <!-- 3. Bulk barcode scan -->
+            <button type="button" onclick="startBulkBarcodeScan()"
+                    class="py-2.5 px-3 bg-red-600 hover:bg-red-500 active:scale-95 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-md shadow-red-600/30 transition cursor-pointer">
+              <i data-lucide="scan-barcode" class="w-4 h-4"></i>
+              <span>Scan Barcodes</span>
             </button>
           </div>
 
@@ -1585,18 +1645,32 @@
         </div>
 
         </div>
-        <div class="flex items-center justify-between gap-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-          <div>
-            <div class="text-xs font-bold text-slate-200">Seller Asking Price for Bulk:</div>
-            <div class="text-[10px] text-slate-400">Total asking price to calculate instant profit</div>
+        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800 space-y-2">
+          <div class="grid grid-cols-2 gap-2">
+            <label class="block">
+              <span class="text-[10px] font-bold text-slate-300">Shop price per item</span>
+              <div class="flex items-center gap-1 mt-0.5"><span class="text-slate-400 font-bold text-xs">$</span>
+                <input type="number" id="lotItemCost" step="0.5" min="0" value="2" class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-right font-bold text-white text-xs focus:ring-1 focus:ring-purple-500 focus:outline-none" onchange="saveLotSettings(); if (lotState.items.length) renderLotTable();"></div>
+            </label>
+            <label class="block">
+              <span class="text-[10px] font-bold text-slate-300">Postage you pay (eBay)</span>
+              <div class="flex items-center gap-1 mt-0.5"><span class="text-slate-400 font-bold text-xs">$</span>
+                <input type="number" id="lotPostage" step="0.5" min="0" value="4" class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-right font-bold text-white text-xs focus:ring-1 focus:ring-purple-500 focus:outline-none" onchange="saveLotSettings(); if (lotState.items.length) renderLotTable();"></div>
+            </label>
           </div>
-          <div class="flex items-center gap-1">
-            <span class="text-slate-400 font-bold text-xs">$</span>
-            <input type="number" id="lotAskingPrice" placeholder="50.00" step="1" min="0" value="50"
-                   class="w-24 px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-right font-bold text-white text-xs focus:ring-1 focus:ring-purple-500 focus:outline-none">
+          <div id="lotAskingWrap" class="flex items-center justify-between gap-3 pt-1 border-t border-slate-800/80">
+            <div>
+              <div class="text-[10px] font-bold text-slate-300">Bulk asking price (whole lot)</div>
+              <div class="text-[10px] text-slate-500">Optional, for a job lot vs CeX cash</div>
+            </div>
+            <div class="flex items-center gap-1">
+              <span class="text-slate-400 font-bold text-xs">$</span>
+              <input type="number" id="lotAskingPrice" placeholder="0" step="1" min="0" value="0"
+                     class="w-24 px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-right font-bold text-white text-xs focus:ring-1 focus:ring-purple-500 focus:outline-none">
+            </div>
           </div>
+          <p class="text-[10px] text-slate-500">eBay net = lowest current price incl. postage, minus 13.4% + $0.30 fees, minus your postage and the shop price.</p>
         </div>
-
         <button onclick="evaluateLot()" class="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl text-xs shadow-lg shadow-purple-600/30 transition flex items-center justify-center gap-2">
           <i data-lucide="calculator" class="w-4 h-4"></i> Calculate Bulk Payout & Profit
         </button>
@@ -1606,19 +1680,19 @@
           <!-- Metrics -->
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
             <div class="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800">
-              <div class="text-[10px] uppercase font-bold text-slate-400">Items Priced</div>
+              <div class="text-[10px] uppercase font-bold text-slate-400" id="lotTile1">Items Priced</div>
               <div class="text-base font-black text-white" id="lotCount">0</div>
             </div>
             <div class="bg-slate-950/80 p-2.5 rounded-xl border border-emerald-900/40">
-              <div class="text-[10px] uppercase font-bold text-emerald-400">Cash Payout</div>
+              <div class="text-[10px] uppercase font-bold text-emerald-400" id="lotTile2">Cash Payout</div>
               <div class="text-base font-black text-emerald-400" id="lotTotalCash">$0</div>
             </div>
             <div class="bg-slate-950/80 p-2.5 rounded-xl border border-blue-900/40">
-              <div class="text-[10px] uppercase font-bold text-blue-400">Voucher Trade</div>
+              <div class="text-[10px] uppercase font-bold text-blue-400" id="lotTile3">Voucher Trade</div>
               <div class="text-base font-black text-blue-400" id="lotTotalVoucher">$0</div>
             </div>
             <div class="bg-slate-950/80 p-2.5 rounded-xl border border-purple-900/40">
-              <div class="text-[10px] uppercase font-bold text-purple-400">Net Cash Profit</div>
+              <div class="text-[10px] uppercase font-bold text-purple-400" id="lotTile4">Net Cash Profit</div>
               <div class="text-base font-black text-purple-300" id="lotNetProfit">+$0</div>
             </div>
           </div>
@@ -2047,7 +2121,11 @@
       { rx: /\b(game\s*boy\s*advance|gba)\b/i, label: "GBA", category: "GBA Software" },
       { rx: /\b(mega\s*drive|genesis)\b/i, label: "Mega Drive", category: "Mega Drive Software" },
       { rx: /\bdreamcast\b/i, label: "Dreamcast", category: "Dreamcast Software" },
-      { rx: /\bpc\s*(dvd|cd)?(-?rom)?\b/i, label: "PC", category: "PC Games" }
+      { rx: /\bpc\s*(dvd|cd)?(-?rom)?\b/i, label: "PC", category: "PC Games" },
+      // Film formats (Movies mode). CeX only really buys Blu-ray; DVD prices come from eBay.
+      { rx: /\b4k(\s*(ultra\s*hd|uhd))?\b|\buhd\b/i, label: "4K UHD", category: "Blu-Ray 4K", media: true },
+      { rx: /\bblu-?\s?ray\b|\bbluray\b|\bbd\b/i, label: "Blu-ray", category: "Blu-Ray Movies", media: true },
+      { rx: /\bdvd\b/i, label: "DVD", category: "", media: true }
     ];
 
     function matchPlatform(text) {
@@ -2069,6 +2147,15 @@
       for (const rawLine of (rawText || "").split("\n")) {
         let line = rawLine.trim();
         if (!line) continue;
+        // Barcode line (EAN/UPC/ISBN): exact lookup, no fuzzy matching needed
+        const bc = line.match(/^\D{0,2}(\d[\d\s-]{6,16}\d)\D{0,2}$/);
+        if (bc) {
+          const digits = bc[1].replace(/\D/g, "");
+          if (digits.length >= 8 && digits.length <= 14) {
+            items.push({ title: digits, gtin: digits, platform: currentPlatform ? currentPlatform.label : "", category: currentPlatform ? currentPlatform.category : "" });
+            continue;
+          }
+        }
         // Already tidied: "Title | Platform"
         let explicit = null;
         if (line.includes("|")) {
@@ -2091,13 +2178,13 @@
         const platform = explicit || inline || currentPlatform;
         items.push({ title: cleaned[0], platform: platform ? platform.label : "", category: platform ? platform.category : "" });
       }
-      // De-duplicate identical title+platform
+      // De-duplicate identical title+platform (or barcode)
       const seen = new Set();
-      return items.filter(it => { const k = (it.title + "|" + it.platform).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+      return items.filter(it => { const k = (it.gtin ? "#" + it.gtin : it.title + "|" + it.platform).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
     }
 
     function formatSpineItems(items) {
-      return items.map(it => it.platform ? `${it.title} | ${it.platform}` : it.title).join("\n");
+      return items.map(it => it.gtin ? it.gtin : (it.platform ? `${it.title} | ${it.platform}` : it.title)).join("\n");
     }
 
     // Button: tidy whatever is in the textarea into clean "Title | Platform" lines.
@@ -2403,6 +2490,8 @@
 
     function openLotModal() {
       document.getElementById("lotModal").classList.remove("hidden");
+      setLotMode(lotState.mode || "games");
+      loadLotSettingsUI();
       const savedKey = localStorage.getItem("bulk_gemini_key") || "";
       const keyInput = document.getElementById("bulkGeminiApiKey");
       if (keyInput && savedKey) keyInput.value = savedKey;
@@ -2514,97 +2603,222 @@
       };
     }
 
+    // ===================== Pricing modes, settings, eBay proxy =====================
+    const EBAY_PROXY_URL = "https://cex-ebay-proxy.vultr2.workers.dev";
+    const EBAY_FEE_RATE = 0.134, EBAY_FEE_FIXED = 0.30;
+    const LOT_MODES = {
+      games:  { label: "Games",  ebayCat: "games",  cex: "catalog", hint: "Photo of spines, Live Text paste, or scan barcodes." },
+      movies: { label: "Movies", ebayCat: "movies", cex: "film",    hint: "CeX buys Blu-rays; DVDs are priced on eBay only." },
+      books:  { label: "Books",  ebayCat: "books",  cex: null,      hint: "Scan the ISBN barcode on the back cover for exact matches." },
+      music:  { label: "Music",  ebayCat: "music",  cex: null,      hint: "Scan the barcode on the back of the CD case." }
+    };
+    lotState.mode = localStorage.getItem("lot_mode") || "games";
+    lotState.settings = { itemCost: 2, postage: 4 };
+    try { Object.assign(lotState.settings, JSON.parse(localStorage.getItem("lot_settings") || "{}")); } catch (e) {}
+
+    function saveLotSettings() {
+      lotState.settings.itemCost = parseFloat(document.getElementById("lotItemCost")?.value || 0) || 0;
+      lotState.settings.postage = parseFloat(document.getElementById("lotPostage")?.value || 0) || 0;
+      try { localStorage.setItem("lot_settings", JSON.stringify(lotState.settings)); } catch (e) {}
+    }
+    function loadLotSettingsUI() {
+      const c = document.getElementById("lotItemCost"), po = document.getElementById("lotPostage");
+      if (c) c.value = lotState.settings.itemCost;
+      if (po) po.value = lotState.settings.postage;
+    }
+    function setLotMode(mode) {
+      if (!LOT_MODES[mode]) mode = "games";
+      lotState.mode = mode;
+      localStorage.setItem("lot_mode", mode);
+      document.querySelectorAll("#lotModeBar button").forEach(b => {
+        const on = b.dataset.mode === mode;
+        b.className = `py-1.5 rounded-lg font-bold transition ${on ? "bg-purple-600 text-white shadow" : "text-slate-400 hover:text-white"}`;
+      });
+      const ask = document.getElementById("lotAskingWrap");
+      if (ask) ask.classList.toggle("hidden", mode !== "games");
+      const st = document.getElementById("lotTidyStatus");
+      if (st && !lotState.items.length) { st.innerText = LOT_MODES[mode].hint; st.className = "text-[10px] text-slate-500 mt-1"; }
+      const ta = document.getElementById("lotTextarea");
+      if (ta) ta.placeholder = mode === "games" ? "Spider-Man PS4\nThe Orange Box Xbox 360\n5026555284158" : mode === "movies" ? "Inception Blu-ray\nThe Dark Knight DVD\n9398711234567" : mode === "books" ? "9780747532699\nSapiens Yuval Noah Harari" : "Fleetwood Mac Rumours\n0093624979357";
+    }
+
+    // Look up one item on eBay AU via the Worker. Returns null on failure.
+    async function ebayLookup(item, mode) {
+      try {
+        const params = new URLSearchParams();
+        if (item.gtin) params.set("gtin", item.gtin);
+        else {
+          let q = item.title;
+          if (mode === "movies" && item.platform && !new RegExp(item.platform.split(" ")[0], "i").test(q)) q += " " + item.platform;
+          if (mode === "games" && item.platform && !new RegExp(item.platform, "i").test(q)) q += " " + item.platform;
+          params.set("q", q);
+          params.set("cat", LOT_MODES[mode].ebayCat);
+        }
+        params.set("limit", "40");
+        const res = await fetch(`${EBAY_PROXY_URL}/ebay/search?${params}`);
+        if (!res.ok) return null;
+        const d = await res.json();
+        if (d.error) return null;
+        return d;
+      } catch (e) { console.warn("eBay lookup failed", e); return null; }
+    }
+    async function mapLimit(arr, limit, fn) {
+      const out = new Array(arr.length); let i = 0;
+      const workers = Array.from({ length: Math.min(limit, arr.length) }, async () => { while (i < arr.length) { const k = i++; out[k] = await fn(arr[k], k); } });
+      await Promise.all(workers);
+      return out;
+    }
+
+    // Profit maths for one priced item; fills item.sell, item.ebayNet, item.cexNet, item.verdict, item.route
+    function computeVerdict(item) {
+      const { itemCost, postage } = lotState.settings;
+      const e = item.ebay;
+      let sell = null;
+      if (e && e.returned > 0) sell = item.gtin ? (e.low ?? e.p25 ?? e.median) : (e.p25 ?? e.median ?? e.low);
+      item.ebaySell = sell;
+      item.ebayNet = sell != null ? Math.round((sell * (1 - EBAY_FEE_RATE) - EBAY_FEE_FIXED - postage - itemCost) * 100) / 100 : null;
+      // CeX only buys Blu-rays: a DVD in hand can't be sold there even if the Blu-ray edition matched
+      const cexEligible = item.found && item.cash > 0 && !((lotState.mode || "games") === "movies" && item.platform === "DVD");
+      item.cexNet = cexEligible ? Math.round((item.cash - itemCost) * 100) / 100 : null;
+      const best = Math.max(item.ebayNet ?? -Infinity, item.cexNet ?? -Infinity);
+      item.route = best === -Infinity ? null : (item.cexNet != null && item.cexNet >= (item.ebayNet ?? -Infinity) ? "cex" : "ebay");
+      item.bestNet = best === -Infinity ? null : best;
+      if (item.bestNet == null) item.verdict = "nodata";
+      else if (item.bestNet >= 4) item.verdict = "buy";
+      else if (item.bestNet >= 0) item.verdict = "marginal";
+      else item.verdict = "leave";
+    }
+
     async function evaluateLot() {
       const rawText = document.getElementById("lotTextarea").value.trim();
-      if (!rawText) return alert("Please enter at least one title or take a photo.");
+      if (!rawText) return alert("Scan some barcodes, paste Live Text, or type a title first.");
+      saveLotSettings();
+      const mode = lotState.mode || "games";
 
       let items = parseSpineDump(rawText);
-      if (!items.length) return alert("Couldn't find any game titles in that text. Tap Tidy Text or type a title.");
+      if (!items.length) return alert("Couldn't find any titles or barcodes in that text. Tap Tidy Text or type a title.");
       document.getElementById("lotTextarea").value = formatSpineItems(items);
-      lotState.askingPrice = parseFloat(document.getElementById("lotAskingPrice").value || 0);
+      lotState.askingPrice = parseFloat(document.getElementById("lotAskingPrice").value || 0) || 0;
 
       const resArea = document.getElementById("lotResultsArea");
       const tbody = document.getElementById("lotTableBody");
       resArea.classList.remove("hidden");
       const setBusy = (msg) => { tbody.innerHTML = `<div class="text-center p-4 text-slate-400 text-xs flex items-center justify-center gap-2"><span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span>${msg}</div>`; };
-      setBusy(`Pricing ${items.length} items on CeX Australia...`);
+      setBusy(`Pricing ${items.length} item${items.length === 1 ? "" : "s"}...`);
 
       try {
-        // 1. Load the CeX catalog for every platform we detected (cached 12h in the browser)
-        const categories = [...new Set(items.map(it => it.category).filter(Boolean))];
-        const catalogs = {};
-        if (categories.length) {
-          setBusy(`Loading CeX ${categories.map(c => c.replace(/\s*(Games|Software)$/, "")).join(", ")} catalog for fuzzy matching...`);
-          await Promise.all(categories.map(async c => { try { catalogs[c] = await getCatalog(c); } catch (e) { console.warn("Catalog load failed", c, e); } }));
-        }
-
-        // 2. Merge adjacent fragments that only make sense together ("EUS EX MANKIND" + "DIVIDED")
-        const merged = [];
-        for (let i = 0; i < items.length; i++) {
-          const cur = items[i], nxt = items[i + 1];
-          const cat = cur.category && catalogs[cur.category];
-          if (cat && nxt && nxt.category === cur.category) {
-            const a = bestCatalogMatches(cur.title, cat, 1)[0].s;
-            const b = bestCatalogMatches(nxt.title, cat, 1)[0].s;
-            let best = null;
-            for (const combo of [`${cur.title} ${nxt.title}`, `${nxt.title} ${cur.title}`]) {
-              const m = bestCatalogMatches(combo, cat, 1)[0];
-              if (!best || m.s > best.s) best = { s: m.s, title: combo };
-            }
-            if (best && best.s >= 0.45 && best.s > Math.max(a, b) + 0.12) {
-              merged.push({ ...cur, title: best.title });
-              i++;
-              continue;
-            }
-          }
-          merged.push(cur);
-        }
-        items = merged;
-
-        // 3. Match against the catalog where we have one; queue the rest for a live search
+        const baseGaming = "boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND superCatFriendlyName:Gaming";
+        const baseFilm = 'boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND superCatFriendlyName:"Film & TV"';
+        const baseAny = "boxVisibilityOnWeb=1 AND boxBuyAllowed=1";
         const priced = new Array(items.length);
-        const searchQueue = [];
-        items.forEach((it, idx) => {
-          const cat = it.category && catalogs[it.category];
-          if (!cat) { searchQueue.push(idx); return; }
-          const m = bestCatalogMatches(it.title, cat, 4);
-          const top = m[0];
-          if (top && top.s >= MATCH_LOW) {
-            priced[idx] = catalogHitToItem(top.it, it, top.s, top.s >= MATCH_HIGH ? "high" : "check", m.slice(1).filter(x => x.s >= 0.25));
-          } else {
-            priced[idx] = {
-              name: it.title, rawTitle: it.title, platform: it.platform, category: it.category, year: extractYear(it.title),
-              cash: 0, voucher: 0, sell: 0, found: false, url: "#", score: top ? top.s : 0, confidence: "none",
-              alts: m.filter(x => x.s >= 0.2).map(x => ({ n: x.it.n, id: x.it.id, c: x.it.c, v: x.it.v, s: x.it.s, score: x.s }))
-            };
-          }
-        });
+        const blank = (it) => ({ name: it.gtin ? `Barcode ${it.gtin}` : it.title, rawTitle: it.title, gtin: it.gtin || "", platform: it.platform, category: it.category || "",
+          year: extractYear(it.title), cash: 0, voucher: 0, sell: 0, found: false, url: "#", score: 0, confidence: "none", alts: [] });
+        const fromHit = (it, hit, score) => ({ name: hit.boxName, rawTitle: it.title, gtin: it.gtin || "", platform: it.platform, category: hit.categoryFriendlyName || hit.categoryName || "",
+          year: extractYear(hit.boxName), cash: parseFloat(hit.cashPriceCalculated || 0), voucher: parseFloat(hit.exchangePriceCalculated || 0), sell: parseFloat(hit.sellPrice || 0),
+          found: true, url: `https://au.webuy.com/sell/product-detail?id=${hit.boxId}`, score, confidence: score >= MATCH_HIGH ? "high" : "check", alts: [] });
 
-        // 4. Live Algolia search for items with no platform (or no catalog)
-        if (searchQueue.length) {
-          setBusy(`Searching CeX for ${searchQueue.length} item(s) without a platform...`);
-          const baseFilters = "boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND superCatFriendlyName:Gaming";
-          const requests = searchQueue.map(idx => ({ indexName: INDEX_NAME, query: items[idx].title, filters: baseFilters, removeWordsIfNoResults: "allOptional", hitsPerPage: 3 }));
+        // ---- 1. CeX ----
+        // 1a. Barcodes: CeX boxId IS the EAN, so an exact query finds the product in any category
+        const gtinIdx = items.map((it, i) => it.gtin ? i : -1).filter(i => i >= 0);
+        if (gtinIdx.length) {
+          setBusy(`Checking ${gtinIdx.length} barcode${gtinIdx.length === 1 ? "" : "s"} on CeX...`);
+          const requests = gtinIdx.map(i => ({ indexName: INDEX_NAME, query: items[i].gtin, filters: baseAny, hitsPerPage: 3 }));
           const res = await fetch(ALGOLIA_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requests }) });
           const data = await res.json();
-          searchQueue.forEach((idx, qi) => {
-            const it = items[idx];
-            const hits = (data.results?.[qi]?.hits) || [];
-            const hit = hits[0];
-            if (hit) {
-              const sc = scoreTitle(it.title, hit.boxName);
-              priced[idx] = {
-                name: hit.boxName, rawTitle: it.title, platform: it.platform, category: hit.categoryFriendlyName || hit.categoryName || "",
-                year: extractYear(hit.boxName), cash: parseFloat(hit.cashPriceCalculated || 0), voucher: parseFloat(hit.exchangePriceCalculated || 0),
-                sell: parseFloat(hit.sellPrice || 0), found: true, url: `https://au.webuy.com/sell/product-detail?id=${hit.boxId}`,
-                score: sc, confidence: sc >= MATCH_HIGH ? "high" : "check",
-                alts: hits.slice(1).map(h => ({ n: h.boxName, id: h.boxId, c: parseFloat(h.cashPriceCalculated || 0), v: parseFloat(h.exchangePriceCalculated || 0), s: parseFloat(h.sellPrice || 0), score: scoreTitle(it.title, h.boxName), category: h.categoryFriendlyName || "" }))
-              };
-            } else {
-              priced[idx] = { name: it.title, rawTitle: it.title, platform: it.platform, category: "", year: extractYear(it.title), cash: 0, voucher: 0, sell: 0, found: false, url: "#", score: 0, confidence: "none", alts: [] };
-            }
+          gtinIdx.forEach((i, qi) => {
+            const hits = (data.results?.[qi]?.hits || []).filter(h => String(h.boxId) === items[i].gtin || String(h.objectID) === items[i].gtin);
+            const hit = hits[0] || (data.results?.[qi]?.hits || [])[0];
+            const exact = hit && (String(hit.boxId) === items[i].gtin);
+            priced[i] = hit ? fromHit(items[i], hit, exact ? 1 : 0.5) : blank(items[i]);
+            if (hit && !exact) priced[i].confidence = "check";
           });
         }
+
+        const textIdx = items.map((it, i) => it.gtin ? -1 : i).filter(i => i >= 0);
+        if (mode === "games" && textIdx.length) {
+          // 1b. Games: fuzzy match against the platform catalog (as before)
+          const categories = [...new Set(textIdx.map(i => items[i].category).filter(Boolean))];
+          const catalogs = {};
+          if (categories.length) {
+            setBusy(`Loading CeX ${categories.map(c => c.replace(/\s*(Games|Software)$/, "")).join(", ")} catalog...`);
+            await Promise.all(categories.map(async c => { try { catalogs[c] = await getCatalog(c); } catch (e) { console.warn("Catalog load failed", c, e); } }));
+          }
+          // merge adjacent fragments
+          for (let k = 0; k < textIdx.length - 1; k++) {
+            const i = textIdx[k], j = textIdx[k + 1];
+            if (j !== i + 1) continue;
+            const cur = items[i], nxt = items[j], cat = cur.category && catalogs[cur.category];
+            if (!cat || nxt.category !== cur.category) continue;
+            const a1 = bestCatalogMatches(cur.title, cat, 1)[0].s, b1 = bestCatalogMatches(nxt.title, cat, 1)[0].s;
+            let best = null;
+            for (const combo of [`${cur.title} ${nxt.title}`, `${nxt.title} ${cur.title}`]) { const m = bestCatalogMatches(combo, cat, 1)[0]; if (!best || m.s > best.s) best = { s: m.s, title: combo }; }
+            if (best && best.s >= 0.45 && best.s > Math.max(a1, b1) + 0.12) { items[i] = { ...cur, title: best.title }; items[j] = null; k++; }
+          }
+          items = items.filter(Boolean);
+          priced.length = items.length;
+          const searchQueue = [];
+          items.forEach((it, idx) => {
+            if (it.gtin) return;
+            const cat = it.category && catalogs[it.category];
+            if (!cat) { searchQueue.push(idx); return; }
+            const m = bestCatalogMatches(it.title, cat, 4), top = m[0];
+            if (top && top.s >= MATCH_LOW) priced[idx] = catalogHitToItem(top.it, it, top.s, top.s >= MATCH_HIGH ? "high" : "check", m.slice(1).filter(x => x.s >= 0.25));
+            else priced[idx] = { ...blank(it), score: top ? top.s : 0, alts: m.filter(x => x.s >= 0.2).map(x => ({ n: x.it.n, id: x.it.id, c: x.it.c, v: x.it.v, s: x.it.s, score: x.s })) };
+          });
+          if (searchQueue.length) {
+            const requests = searchQueue.map(idx => ({ indexName: INDEX_NAME, query: items[idx].title, filters: baseGaming, removeWordsIfNoResults: "allOptional", hitsPerPage: 3 }));
+            const res = await fetch(ALGOLIA_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requests }) });
+            const data = await res.json();
+            searchQueue.forEach((idx, qi) => {
+              const hits = data.results?.[qi]?.hits || [];
+              if (!hits.length) { priced[idx] = blank(items[idx]); return; }
+              const sc = scoreTitle(items[idx].title, hits[0].boxName);
+              priced[idx] = fromHit(items[idx], hits[0], sc);
+              priced[idx].alts = hits.slice(1).map(h => ({ n: h.boxName, id: h.boxId, c: parseFloat(h.cashPriceCalculated || 0), v: parseFloat(h.exchangePriceCalculated || 0), s: parseFloat(h.sellPrice || 0), score: scoreTitle(items[idx].title, h.boxName), category: h.categoryFriendlyName || "" }));
+            });
+          }
+        } else if (mode === "movies" && textIdx.length) {
+          // 1c. Movies: live CeX Film & TV search (Blu-rays only really exist there)
+          setBusy(`Checking ${textIdx.length} title${textIdx.length === 1 ? "" : "s"} on CeX Film & TV...`);
+          const requests = textIdx.map(i => ({ indexName: INDEX_NAME, query: items[i].title, filters: baseFilm, removeWordsIfNoResults: "allOptional", hitsPerPage: 3 }));
+          const res = await fetch(ALGOLIA_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requests }) });
+          const data = await res.json();
+          textIdx.forEach((i, qi) => {
+            const hits = data.results?.[qi]?.hits || [];
+            const it = items[i];
+            if (!hits.length) { priced[i] = blank(it); return; }
+            const sc = scoreTitle(it.title, hits[0].boxName);
+            if (sc < MATCH_LOW) { priced[i] = blank(it); priced[i].alts = hits.slice(0, 3).map(h => ({ n: h.boxName, id: h.boxId, c: parseFloat(h.cashPriceCalculated || 0), v: parseFloat(h.exchangePriceCalculated || 0), s: parseFloat(h.sellPrice || 0), score: scoreTitle(it.title, h.boxName), category: h.categoryFriendlyName || "" })); return; }
+            priced[i] = fromHit(it, hits[0], sc);
+            priced[i].alts = hits.slice(1).map(h => ({ n: h.boxName, id: h.boxId, c: parseFloat(h.cashPriceCalculated || 0), v: parseFloat(h.exchangePriceCalculated || 0), s: parseFloat(h.sellPrice || 0), score: scoreTitle(it.title, h.boxName), category: h.categoryFriendlyName || "" }));
+          });
+        } else {
+          // 1d. Books / Music: CeX doesn't buy these
+          items.forEach((it, i) => { if (!priced[i]) priced[i] = blank(it); });
+        }
+        items.forEach((it, i) => { if (!priced[i]) priced[i] = blank(it); });
+
+        // ---- 2. eBay AU for everything ----
+        let done = 0;
+        setBusy(`Checking eBay AU prices (0 / ${items.length})...`);
+        const ebayResults = await mapLimit(items, 4, async (it, i) => {
+          // For text titles, search eBay with the CeX-resolved name when we have a confident one (cleaner than OCR text)
+          const q = { ...it };
+          if (!it.gtin && priced[i].found && priced[i].confidence === "high") q.title = priced[i].name.replace(/\s*\((No DLC|\d+)\)\s*/gi, " ").trim();
+          const r = await ebayLookup(q, mode);
+          done++; setBusy(`Checking eBay AU prices (${done} / ${items.length})...`);
+          return r;
+        });
+        items.forEach((it, i) => {
+          const e = ebayResults[i];
+          priced[i].ebay = e ? { low: e.low, p25: e.p25, median: e.median, count: e.count, returned: e.returned, top: e.items?.[0] || null, url: e.items?.[0]?.url || null } : null;
+          // Barcode items with no CeX name: take the title from the eBay listing
+          if (!priced[i].found && it.gtin && e && e.items && e.items[0]) {
+            priced[i].name = e.items[0].title.replace(/\s+/g, " ").slice(0, 90);
+            priced[i].ebayTitled = true;
+          }
+          computeVerdict(priced[i]);
+        });
 
         lotState.items = priced;
         renderLotTable();
@@ -2641,6 +2855,7 @@
     // Keep the textarea in step with fixes made on the cards, so re-running Calculate keeps them.
     function syncLotTextarea() {
       const lines = lotState.items.map(it => {
+        if (it.gtin) return it.gtin;
         const title = it.found ? it.name : it.rawTitle;
         return it.platform ? `${title} | ${it.platform}` : title;
       });
@@ -2660,6 +2875,7 @@
       item.url = `https://au.webuy.com/sell/product-detail?id=${alt.id}`; item.year = extractYear(alt.n);
       if (alt.category) item.category = alt.category;
       item.confidence = "high"; item.score = 1; item.confirmed = true;
+      computeVerdict(item);
       syncLotTextarea();
       renderLotTable();
     }
@@ -2681,29 +2897,85 @@
 
     function renderLotTable() {
       const items = lotState.items;
-      const rank = (it) => !it.found ? 0 : (it.confidence === "check" ? 1 : 2);
-      const sorted = items.map((it, i) => ({ it, i })).sort((a, b) => (rank(a.it) - rank(b.it)) || (b.it.cash - a.it.cash));
-      let totalCash = 0, totalVoucher = 0, foundCount = 0, checkCount = 0, missCount = 0;
+      const mode = lotState.mode || "games";
+      const media = mode !== "games";
+      items.forEach(computeVerdict);
+      const vRank = { buy: 0, marginal: 1, leave: 2, nodata: 3 };
+      const attnRank = (it) => !it.found && !it.ebay ? 0 : (it.confidence === "check" ? 1 : 2);
+      const sorted = items.map((it, i) => ({ it, i })).sort((a, b) => media
+        ? ((vRank[a.it.verdict] - vRank[b.it.verdict]) || ((b.it.bestNet ?? -99) - (a.it.bestNet ?? -99)))
+        : ((attnRank(a.it) - attnRank(b.it)) || (b.it.cash - a.it.cash)));
+
+      let totalCash = 0, totalVoucher = 0, foundCount = 0, checkCount = 0, missCount = 0, buyCount = 0, sellValue = 0, estProfit = 0;
       for (const it of items) {
         if (it.found) { totalCash += it.cash; totalVoucher += it.voucher; foundCount++; }
         if (it.found && it.confidence === "check") checkCount++;
-        if (!it.found) missCount++;
+        if (!it.found && !(it.ebay && it.ebay.returned)) missCount++;
+        if (it.verdict === "buy" || it.verdict === "marginal") { buyCount += it.verdict === "buy" ? 1 : 0; }
+        if (it.verdict === "buy") { sellValue += it.route === "cex" ? it.cash : (it.ebaySell || 0); estProfit += it.bestNet || 0; }
       }
       const pending = checkCount + missCount;
-      document.getElementById("lotCount").innerText = `${foundCount}${items.length !== foundCount ? ` / ${items.length}` : ""}`;
-      document.getElementById("lotTotalCash").innerText = money(totalCash);
-      document.getElementById("lotTotalVoucher").innerText = money(totalVoucher);
-      const netCash = totalCash - lotState.askingPrice;
-      const netEl = document.getElementById("lotNetProfit");
-      netEl.innerText = `${netCash >= 0 ? '+' : '-'}$${Math.abs(netCash).toFixed(2)}`;
-      // Grey the net out while rows still need a decision; it isn't final yet
-      netEl.className = `text-base font-black ${pending ? 'text-slate-500' : (netCash >= 0 ? 'text-emerald-400' : 'text-rose-400')}`;
-      netEl.title = pending ? `${pending} row(s) still need checking` : `Cash payout ${money(totalCash)} minus asking ${money(lotState.askingPrice)}`;
+      const setTile = (n, label, value, cls) => { document.getElementById(`lotTile${n}`).innerText = label; const el = document.getElementById(["lotCount", "lotTotalCash", "lotTotalVoucher", "lotNetProfit"][n - 1]); el.innerText = value; if (cls) el.className = cls; };
+      if (media) {
+        setTile(1, "Items", `${items.length}`);
+        setTile(2, "Worth buying", `${buyCount}`, "text-base font-black text-emerald-400");
+        setTile(3, "Sell value (buys)", money(sellValue), "text-base font-black text-blue-400");
+        setTile(4, "Est. profit (buys)", `${estProfit >= 0 ? "+" : "-"}$${Math.abs(estProfit).toFixed(2)}`, `text-base font-black ${estProfit > 0 ? "text-emerald-400" : "text-slate-400"}`);
+      } else {
+        setTile(1, "Items priced", `${foundCount}${items.length !== foundCount ? ` / ${items.length}` : ""}`);
+        setTile(2, "CeX cash", money(totalCash), "text-base font-black text-emerald-400");
+        setTile(3, "CeX voucher", money(totalVoucher), "text-base font-black text-blue-400");
+        if (lotState.askingPrice > 0) {
+          const netCash = totalCash - lotState.askingPrice;
+          setTile(4, "Net vs asking", `${netCash >= 0 ? "+" : "-"}$${Math.abs(netCash).toFixed(2)}`, `text-base font-black ${pending ? "text-slate-500" : (netCash >= 0 ? "text-emerald-400" : "text-rose-400")}`);
+        } else {
+          setTile(4, "Worth buying", `${buyCount}`, "text-base font-black text-emerald-400");
+        }
+      }
 
       const chip = (txt, cls) => `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${cls}">${txt}</span>`;
+      const verdictChip = (it) => it.verdict === "buy" ? chip(`BUY · +${money(it.bestNet)}`, "bg-emerald-600 text-white")
+        : it.verdict === "marginal" ? chip(`Marginal · +${money(it.bestNet)}`, "bg-amber-500/20 text-amber-300 border border-amber-700/40")
+        : it.verdict === "leave" ? chip(`Leave · -${money(Math.abs(it.bestNet))}`, "bg-slate-800 text-slate-400")
+        : chip("No price data", "bg-slate-800 text-slate-500");
       const platformChip = (item) => {
         const pf = item.found && item.category ? item.category.replace(/\s*(Games|Software)$/, "") : item.platform;
         return pf ? chip(escapeHtml(pf), "bg-slate-800 text-slate-300") : "";
+      };
+      const ebayLine = (item) => {
+        const e = item.ebay;
+        if (!e || !e.returned) return `<div class="text-[11px] text-slate-500 mt-1">eBay AU: no current listings found${item.gtin ? " for this barcode" : ""}</div>`;
+        const basis = item.gtin ? "lowest" : "typical low";
+        const net = item.ebayNet;
+        return `<div class="flex items-baseline gap-2 mt-1 text-[11px] flex-wrap">
+          <a href="${e.url || "#"}" target="_blank" class="text-blue-300 hover:underline font-bold">eBay</a>
+          <span><span class="text-white font-bold">${money(item.ebaySell)}</span> <span class="text-slate-500">${basis} incl. post</span></span>
+          <span class="text-slate-500">${e.count} listing${e.count === 1 ? "" : "s"}</span>
+          <span class="${net >= 0 ? "text-emerald-400" : "text-rose-400"} font-bold">${net >= 0 ? "+" : "-"}${money(Math.abs(net))} net</span>
+        </div>`;
+      };
+      const cexLine = (item) => {
+        if (!item.found) return media && LOT_MODES[mode].cex ? `<div class="text-[11px] text-slate-500 mt-1">CeX: not stocked</div>` : "";
+        return `<div class="flex items-baseline gap-2 mt-1 text-[11px] flex-wrap">
+          <a href="${item.url}" target="_blank" class="text-purple-300 hover:underline font-bold">CeX</a>
+          <span><span class="text-emerald-400 font-black">${money(item.cash)}</span> <span class="text-slate-500">cash</span></span>
+          <span><span class="text-blue-400 font-bold">${money(item.voucher)}</span> <span class="text-slate-500">trade</span></span>
+          <span class="text-slate-500">sells ${item.sell > 0 ? money(item.sell) : "-"}</span>
+          ${item.cexNet != null ? `<span class="${item.cexNet >= 0 ? "text-emerald-400" : "text-rose-400"} font-bold">${item.cexNet >= 0 ? "+" : "-"}${money(Math.abs(item.cexNet))} net</span>` : (media && item.platform === "DVD" ? `<span class="text-amber-400/80">Blu-ray price, CeX won't take the DVD</span>` : "")}
+        </div>`;
+      };
+      const altPicker = (item, idx) => {
+        const alts = (item.alts || []).slice(0, 3);
+        if (!alts.length) return "";
+        if (item.found && item.confidence !== "check") return "";
+        const head = item.found ? "Not this one? Pick the right item:" : "Did you mean one of these on CeX?";
+        const rows = alts.map((a, ai) => `
+          <button type="button" onclick="swapLotItem(${idx}, ${ai})" class="w-full flex items-center justify-between gap-2 text-left px-2.5 py-1.5 rounded-lg border border-slate-700 bg-slate-900 hover:border-purple-500 hover:bg-slate-800 active:scale-[0.99] transition">
+            <span class="text-[11px] text-slate-200 font-medium truncate">${escapeHtml(a.n)}</span>
+            <span class="text-[11px] font-bold text-emerald-400 shrink-0">${money(a.c)} <span class="text-slate-500 font-normal">cash</span></span>
+          </button>`).join("");
+        const keep = item.found ? `<button type="button" onclick="confirmLotItem(${idx})" class="w-full text-center px-2.5 py-1.5 rounded-lg border border-emerald-800/50 bg-emerald-950/30 text-[11px] font-bold text-emerald-300 hover:bg-emerald-950/60">✓ Keep ${escapeHtml(item.name)}</button>` : "";
+        return `<div class="mt-2 space-y-1"><div class="text-[10px] text-slate-400">${head}</div>${rows}${keep}</div>`;
       };
       const ebayLinks = (item) => {
         const name = item.name || item.rawTitle;
@@ -2715,54 +2987,38 @@
             <a href="${high}" target="_blank" class="text-[10px] font-bold text-purple-300 bg-slate-800 px-2 py-0.5 rounded border border-purple-900/40">Highest</a>
           </div></details>`;
       };
-      const altPicker = (item, idx) => {
-        const alts = (item.alts || []).slice(0, 3);
-        if (!alts.length && item.found) return "";
-        const head = item.found ? "Not this one? Pick the right game:" : "Did you mean one of these?";
-        const rows = alts.map((a, ai) => `
-          <button type="button" onclick="swapLotItem(${idx}, ${ai})" class="w-full flex items-center justify-between gap-2 text-left px-2.5 py-1.5 rounded-lg border border-slate-700 bg-slate-900 hover:border-purple-500 hover:bg-slate-800 active:scale-[0.99] transition">
-            <span class="text-[11px] text-slate-200 font-medium truncate">${escapeHtml(a.n)}</span>
-            <span class="text-[11px] font-bold text-emerald-400 shrink-0">${money(a.c)} <span class="text-slate-500 font-normal">cash</span></span>
-          </button>`).join("");
-        const keep = item.found ? `<button type="button" onclick="confirmLotItem(${idx})" class="w-full text-center px-2.5 py-1.5 rounded-lg border border-emerald-800/50 bg-emerald-950/30 text-[11px] font-bold text-emerald-300 hover:bg-emerald-950/60">✓ Keep ${escapeHtml(item.name)}</button>` : "";
-        return `<div class="mt-2 space-y-1"><div class="text-[10px] text-slate-400">${head}</div>${rows}${keep}</div>`;
-      };
 
       const cards = sorted.map(({ it: item, i: idx }) => {
-        const state = !item.found ? "none" : (item.confidence === "check" ? "check" : "ok");
-        const border = state === "none" ? "border-rose-800/50" : (state === "check" ? "border-amber-700/50" : "border-slate-800");
-        const status = state === "none" ? chip("Not matched", "bg-rose-950/60 text-rose-300 border border-rose-800/40")
+        const hasAnyData = item.found || (item.ebay && item.ebay.returned);
+        const state = !hasAnyData ? "none" : (item.found && item.confidence === "check" ? "check" : "ok");
+        const border = item.verdict === "buy" ? "border-emerald-700/60" : state === "none" ? "border-rose-800/50" : (state === "check" ? "border-amber-700/50" : "border-slate-800");
+        const status = state === "none" ? chip("Not found", "bg-rose-950/60 text-rose-300 border border-rose-800/40")
                      : state === "check" ? chip("Check match", "bg-amber-500/15 text-amber-300 border border-amber-700/40")
                      : (item.confirmed ? chip("✓ Confirmed", "bg-emerald-950/50 text-emerald-300 border border-emerald-800/40") : "");
-        const readAs = item.found && item.rawTitle && matchNorm(item.rawTitle) !== matchNorm(item.name) ? `<div class="text-[10px] text-slate-500 truncate">read as "${escapeHtml(item.rawTitle)}"</div>` : "";
-        const title = item.found
+        const readAs = item.rawTitle && !item.gtin && matchNorm(item.rawTitle) !== matchNorm(item.name) ? `<div class="text-[10px] text-slate-500 truncate">read as "${escapeHtml(item.rawTitle)}"</div>` : (item.gtin ? `<div class="text-[10px] text-slate-500">barcode ${item.gtin}${item.ebayTitled ? " · title from eBay listing" : ""}</div>` : "");
+        const titleHtml = item.found
           ? `<a href="${item.url}" target="_blank" class="text-[13px] font-bold text-white hover:text-blue-300 hover:underline leading-tight">${escapeHtml(item.name)}</a>`
-          : `<span class="text-[13px] font-bold text-rose-200 leading-tight">${escapeHtml(item.rawTitle)}</span>`;
-        const priceLine = item.found
-          ? `<div class="flex items-baseline gap-3 mt-1 text-[11px] flex-wrap">
-               <span><span class="text-emerald-400 font-black text-[13px]">${money(item.cash)}</span> <span class="text-slate-500">cash</span></span>
-               <span><span class="text-blue-400 font-bold">${money(item.voucher)}</span> <span class="text-slate-500">trade</span></span>
-               <span class="text-slate-400">CeX sells ${item.sell > 0 ? money(item.sell) : "-"}</span>
-             </div>`
-          : `<div class="text-[11px] text-slate-500 mt-1">Not counted in totals</div>`;
+          : `<span class="text-[13px] font-bold ${hasAnyData ? "text-white" : "text-rose-200"} leading-tight">${escapeHtml(item.name)}</span>`;
+        const route = item.verdict === "buy" || item.verdict === "marginal" ? `<div class="text-[10px] text-slate-400 mt-1">Best route: <span class="text-white font-bold">${item.route === "cex" ? "sell to CeX for cash" : "list on eBay"}</span></div>` : "";
         return `
           <div class="bg-slate-950/70 border ${border} rounded-xl p-3">
             <div class="flex items-start gap-2">
               <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-1.5 flex-wrap">${title}${platformChip(item)}${status}${item.year ? chip(`📅 ${item.year}`, "bg-amber-500/15 text-amber-300") : ""}</div>
+                <div class="flex items-center gap-1.5 flex-wrap">${titleHtml}${platformChip(item)}${status}${hasAnyData ? verdictChip(item) : ""}</div>
                 ${readAs}
-                ${priceLine}
+                ${cexLine(item)}
+                ${ebayLine(item)}
+                ${route}
               </div>
               <button type="button" onclick="removeLotItem(${idx})" title="Remove" class="shrink-0 w-7 h-7 rounded-full bg-slate-900 border border-slate-800 text-slate-500 hover:text-rose-300 hover:border-rose-800 flex items-center justify-center"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
             </div>
             ${altPicker(item, idx)}
-            ${item.found ? ebayLinks(item) : ""}
+            ${hasAnyData ? ebayLinks(item) : ""}
           </div>`;
       }).join("");
 
-      const summary = pending
-        ? `<div class="text-[10px] text-slate-400 text-center px-2">${missCount ? `<span class="text-rose-300 font-bold">${missCount}</span> unmatched` : ""}${missCount && checkCount ? " · " : ""}${checkCount ? `<span class="text-amber-300 font-bold">${checkCount}</span> to check` : ""} · fix or remove them to finalise the net profit</div>`
-        : (items.length ? `<div class="text-[10px] text-emerald-400 text-center">All ${items.length} matched. Totals are final.</div>` : "");
+      const leaveCount = items.filter(i => i.verdict === "leave").length;
+      const summary = items.length ? `<div class="text-[10px] text-slate-400 text-center px-2">${buyCount ? `<span class="text-emerald-300 font-bold">${buyCount}</span> to buy` : "nothing clearly worth buying"}${leaveCount ? ` · ${leaveCount} to leave` : ""}${checkCount ? ` · <span class="text-amber-300 font-bold">${checkCount}</span> to check` : ""}${missCount ? ` · <span class="text-rose-300 font-bold">${missCount}</span> not found` : ""} · at $${lotState.settings.itemCost} each, $${lotState.settings.postage} postage</div>` : "";
       document.getElementById("lotTableBody").innerHTML = summary + cards;
       lucide.createIcons();
     }

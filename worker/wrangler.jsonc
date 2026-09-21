@@ -1,0 +1,8 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cex-ebay-proxy",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true }
+  // Secrets (set with `npx wrangler secret put`): EBAY_APP_ID, EBAY_CERT_ID
+}
