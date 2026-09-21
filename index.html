@@ -2431,155 +2431,248 @@
       document.getElementById("lotTextarea").value = SHELF_EXAMPLE_TITLES.join("\n");
     }
 
+    // ===================== CeX catalog fuzzy matching =====================
+    // Live Text / OCR titles are matched against the full CeX catalog for the detected platform,
+    // so "SUNSET OVERDENE" -> "Sunset Overdrive" and "TRACKMANIA" -> "Trackmania Turbo".
+    // The index caps any one query at 1000 hits, so a platform is fetched in sell-price bands.
+    const CATALOG_BANDS = [[0, 3], [3, 6], [6, 10], [10, 15], [15, 25], [25, 50], [50, 100000]];
+    const CATALOG_TTL_MS = 12 * 60 * 60 * 1000;
+    const catalogMemo = {};
+
+    async function getCatalog(category) {
+      if (catalogMemo[category]) return catalogMemo[category];
+      const key = `cex_cat_v1_${category}`;
+      try {
+        const cached = JSON.parse(localStorage.getItem(key) || "null");
+        if (cached && cached.ts && (Date.now() - cached.ts) < CATALOG_TTL_MS && Array.isArray(cached.items) && cached.items.length) {
+          catalogMemo[category] = cached.items;
+          return cached.items;
+        }
+      } catch (e) {}
+      const requests = CATALOG_BANDS.map(([lo, hi]) => ({
+        indexName: INDEX_NAME,
+        query: "",
+        filters: `boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND categoryFriendlyName:"${category}" AND sellPrice >= ${lo} AND sellPrice < ${hi}`,
+        hitsPerPage: 1000,
+        attributesToRetrieve: ["boxName", "boxId", "cashPriceCalculated", "exchangePriceCalculated", "sellPrice"]
+      }));
+      const res = await fetch(ALGOLIA_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requests }) });
+      const data = await res.json();
+      const items = [];
+      for (const r of (data.results || [])) for (const h of (r.hits || [])) {
+        items.push({ n: h.boxName, id: h.boxId, c: parseFloat(h.cashPriceCalculated || 0), v: parseFloat(h.exchangePriceCalculated || 0), s: parseFloat(h.sellPrice || 0) });
+      }
+      if (!items.length) throw new Error(`No catalog for ${category}`);
+      catalogMemo[category] = items;
+      try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), items })); } catch (e) { /* storage full: fine, memo only */ }
+      return items;
+    }
+
+    function matchNorm(str) {
+      return (str || "").toLowerCase()
+        .replace(/\((\d+|[a-z]{1,3}\s*\d*)\)/g, " ")
+        .replace(/[''`]/g, "").replace(/&/g, " and ")
+        .replace(/[^a-z0-9]+/g, " ").replace(/\b(the|a|of|edition|game|goty)\b/g, " ")
+        .replace(/\s+/g, " ").trim();
+    }
+    function matchFold(str) { return str.replace(/0/g, "o").replace(/1/g, "i").replace(/5/g, "s").replace(/2/g, "z").replace(/8/g, "b").replace(/[^a-z]/g, ""); }
+    function trigramMap(str) { const m = new Map(); const p = `  ${str} `; for (let i = 0; i < p.length - 2; i++) { const g = p.slice(i, i + 3); m.set(g, (m.get(g) || 0) + 1); } return m; }
+    function diceSim(x, y) {
+      if (!x.length || !y.length) return 0;
+      const tx = trigramMap(x), ty = trigramMap(y);
+      let inter = 0, nx = 0, ny = 0;
+      for (const v of tx.values()) nx += v;
+      for (const v of ty.values()) ny += v;
+      for (const [g, v] of tx) if (ty.has(g)) inter += Math.min(v, ty.get(g));
+      return (2 * inter) / (nx + ny);
+    }
+    function tokenSim(q, t) { const qa = q.split(" ").filter(w => w.length >= 3), ts = new Set(t.split(" ")); if (!qa.length) return 0; let hit = 0; for (const w of qa) if (ts.has(w)) hit++; return hit / qa.length; }
+    function scoreTitle(query, title) {
+      const q = matchNorm(query), t = matchNorm(title);
+      if (!q || !t) return 0;
+      const d1 = diceSim(q.replace(/ /g, ""), t.replace(/ /g, ""));
+      const d2 = diceSim(matchFold(q), matchFold(t));
+      const contain = t.includes(q) ? 0.15 : 0;
+      return Math.min(1, Math.max(d1, d2) * 0.7 + tokenSim(q, t) * 0.3 + contain);
+    }
+    function bestCatalogMatches(query, catalog, n = 4) {
+      const scored = new Array(catalog.length);
+      for (let i = 0; i < catalog.length; i++) scored[i] = { it: catalog[i], s: scoreTitle(query, catalog[i].n) };
+      scored.sort((x, y) => y.s - x.s);
+      return scored.slice(0, n);
+    }
+
+    const MATCH_HIGH = 0.6, MATCH_LOW = 0.4;
+    const lotState = { items: [], askingPrice: 0 };
+
+    function catalogHitToItem(hit, base, score, confidence, alts) {
+      return {
+        name: hit.n, rawTitle: base.title, platform: base.platform, category: base.category,
+        year: extractYear(hit.n), cash: hit.c, voucher: hit.v, sell: hit.s, found: true,
+        url: `https://au.webuy.com/sell/product-detail?id=${hit.id}`, score, confidence,
+        alts: (alts || []).map(m => ({ n: m.it.n, id: m.it.id, c: m.it.c, v: m.it.v, s: m.it.s, score: m.s }))
+      };
+    }
+
     async function evaluateLot() {
       const rawText = document.getElementById("lotTextarea").value.trim();
       if (!rawText) return alert("Please enter at least one title or take a photo.");
 
-      const items = parseSpineDump(rawText);
+      let items = parseSpineDump(rawText);
       if (!items.length) return alert("Couldn't find any game titles in that text. Tap Tidy Text or type a title.");
       document.getElementById("lotTextarea").value = formatSpineItems(items);
-      const lines = items.map(it => it.title);
-      const askingPrice = parseFloat(document.getElementById("lotAskingPrice").value || 0);
+      lotState.askingPrice = parseFloat(document.getElementById("lotAskingPrice").value || 0);
 
       const resArea = document.getElementById("lotResultsArea");
+      const tbody = document.getElementById("lotTableBody");
       resArea.classList.remove("hidden");
-      document.getElementById("lotTableBody").innerHTML = `<tr><td colspan="4" class="text-center p-4 text-slate-400">Pricing ${lines.length} items on CeX Australia...</td></tr>`;
+      const setBusy = (msg) => { tbody.innerHTML = `<tr><td colspan="4" class="text-center p-4 text-slate-400">${msg}</td></tr>`; };
+      setBusy(`Pricing ${items.length} items on CeX Australia...`);
 
       try {
-        // Two requests per item: (A) hard-filtered to the detected platform's CeX category,
-        // (B) unfiltered gaming fallback. Prefer A when it has a hit.
-        const baseFilters = "boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND superCatFriendlyName:Gaming";
-        const requests = [];
-        items.forEach(it => {
-          requests.push({
-            indexName: INDEX_NAME,
-            query: it.title,
-            filters: it.category ? `boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND categoryFriendlyName:"${it.category}"` : baseFilters,
-            removeWordsIfNoResults: "allOptional",
-            hitsPerPage: 1
-          });
-          requests.push({
-            indexName: INDEX_NAME,
-            query: it.title,
-            filters: baseFilters,
-            removeWordsIfNoResults: "allOptional",
-            hitsPerPage: 1
-          });
-        });
-
-        const res = await fetch(ALGOLIA_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ requests })
-        });
-        const raw = await res.json();
-        // Collapse the pairs back to one result per item
-        const data = { results: items.map((it, i) => {
-          const a = raw.results[i * 2], b = raw.results[i * 2 + 1];
-          return (a && a.hits && a.hits.length) ? a : b;
-        }) };
-
-        // Secondary fallback for non-gaming or movie discs that got 0 hits
-        const missingIndices = [];
-        data.results.forEach((r, idx) => {
-          if (!r.hits || r.hits.length === 0) missingIndices.push(idx);
-        });
-
-        if (missingIndices.length > 0) {
-          const retryRequests = missingIndices.map(idx => ({
-            indexName: INDEX_NAME,
-            query: lines[idx],
-            filters: "boxVisibilityOnWeb=1 AND boxBuyAllowed=1",
-            removeWordsIfNoResults: "allOptional",
-            hitsPerPage: 1
-          }));
-          try {
-            const retryRes = await fetch(ALGOLIA_URL, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ requests: retryRequests })
-            });
-            const retryData = await retryRes.json();
-            retryData.results.forEach((r, i) => {
-              if (r.hits && r.hits.length > 0) {
-                data.results[missingIndices[i]] = r;
-              }
-            });
-          } catch (e) {
-            // fallback non-blocking
-          }
+        // 1. Load the CeX catalog for every platform we detected (cached 12h in the browser)
+        const categories = [...new Set(items.map(it => it.category).filter(Boolean))];
+        const catalogs = {};
+        if (categories.length) {
+          setBusy(`Loading CeX ${categories.map(c => c.replace(/\s*(Games|Software)$/, "")).join(", ")} catalog for fuzzy matching...`);
+          await Promise.all(categories.map(async c => { try { catalogs[c] = await getCatalog(c); } catch (e) { console.warn("Catalog load failed", c, e); } }));
         }
-        
-        let totalCash = 0;
-        let totalVoucher = 0;
-        let pricedItems = [];
 
-        data.results.forEach((r, idx) => {
-          const originalLine = lines[idx];
-          const hit = r.hits?.[0];
-          if (hit) {
-            const cash = parseFloat(hit.cashPriceCalculated || 0);
-            const voucher = parseFloat(hit.exchangePriceCalculated || 0);
-            const sell = parseFloat(hit.sellPrice || 0);
-            const year = extractYear(hit.boxName);
-            totalCash += cash;
-            totalVoucher += voucher;
-            pricedItems.push({
-              name: hit.boxName,
-              rawTitle: originalLine,
-              platform: items[idx].platform,
-              category: hit.categoryFriendlyName || hit.categoryName || "",
-              year: year,
-              cash: cash,
-              voucher: voucher,
-              sell: sell,
-              found: true,
-              url: `https://au.webuy.com/sell/product-detail?id=${hit.boxId}`
-            });
+        // 2. Merge adjacent fragments that only make sense together ("EUS EX MANKIND" + "DIVIDED")
+        const merged = [];
+        for (let i = 0; i < items.length; i++) {
+          const cur = items[i], nxt = items[i + 1];
+          const cat = cur.category && catalogs[cur.category];
+          if (cat && nxt && nxt.category === cur.category) {
+            const a = bestCatalogMatches(cur.title, cat, 1)[0].s;
+            const b = bestCatalogMatches(nxt.title, cat, 1)[0].s;
+            let best = null;
+            for (const combo of [`${cur.title} ${nxt.title}`, `${nxt.title} ${cur.title}`]) {
+              const m = bestCatalogMatches(combo, cat, 1)[0];
+              if (!best || m.s > best.s) best = { s: m.s, title: combo };
+            }
+            if (best && best.s >= 0.45 && best.s > Math.max(a, b) + 0.12) {
+              merged.push({ ...cur, title: best.title });
+              i++;
+              continue;
+            }
+          }
+          merged.push(cur);
+        }
+        items = merged;
+
+        // 3. Match against the catalog where we have one; queue the rest for a live search
+        const priced = new Array(items.length);
+        const searchQueue = [];
+        items.forEach((it, idx) => {
+          const cat = it.category && catalogs[it.category];
+          if (!cat) { searchQueue.push(idx); return; }
+          const m = bestCatalogMatches(it.title, cat, 4);
+          const top = m[0];
+          if (top && top.s >= MATCH_LOW) {
+            priced[idx] = catalogHitToItem(top.it, it, top.s, top.s >= MATCH_HIGH ? "high" : "check", m.slice(1).filter(x => x.s >= 0.25));
           } else {
-            const year = extractYear(originalLine);
-            pricedItems.push({
-              name: originalLine,
-              rawTitle: originalLine,
-              platform: items[idx].platform,
-              category: "",
-              year: year,
-              cash: 0,
-              voucher: 0,
-              sell: 0,
-              found: false,
-              url: "#"
-            });
+            priced[idx] = {
+              name: it.title, rawTitle: it.title, platform: it.platform, category: it.category, year: extractYear(it.title),
+              cash: 0, voucher: 0, sell: 0, found: false, url: "#", score: top ? top.s : 0, confidence: "none",
+              alts: m.filter(x => x.s >= 0.2).map(x => ({ n: x.it.n, id: x.it.id, c: x.it.c, v: x.it.v, s: x.it.s, score: x.s }))
+            };
           }
         });
 
-        pricedItems.sort((a, b) => b.cash - a.cash);
+        // 4. Live Algolia search for items with no platform (or no catalog)
+        if (searchQueue.length) {
+          setBusy(`Searching CeX for ${searchQueue.length} item(s) without a platform...`);
+          const baseFilters = "boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND superCatFriendlyName:Gaming";
+          const requests = searchQueue.map(idx => ({ indexName: INDEX_NAME, query: items[idx].title, filters: baseFilters, removeWordsIfNoResults: "allOptional", hitsPerPage: 3 }));
+          const res = await fetch(ALGOLIA_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requests }) });
+          const data = await res.json();
+          searchQueue.forEach((idx, qi) => {
+            const it = items[idx];
+            const hits = (data.results?.[qi]?.hits) || [];
+            const hit = hits[0];
+            if (hit) {
+              const sc = scoreTitle(it.title, hit.boxName);
+              priced[idx] = {
+                name: hit.boxName, rawTitle: it.title, platform: it.platform, category: hit.categoryFriendlyName || hit.categoryName || "",
+                year: extractYear(hit.boxName), cash: parseFloat(hit.cashPriceCalculated || 0), voucher: parseFloat(hit.exchangePriceCalculated || 0),
+                sell: parseFloat(hit.sellPrice || 0), found: true, url: `https://au.webuy.com/sell/product-detail?id=${hit.boxId}`,
+                score: sc, confidence: sc >= MATCH_HIGH ? "high" : "check",
+                alts: hits.slice(1).map(h => ({ n: h.boxName, id: h.boxId, c: parseFloat(h.cashPriceCalculated || 0), v: parseFloat(h.exchangePriceCalculated || 0), s: parseFloat(h.sellPrice || 0), score: scoreTitle(it.title, h.boxName), category: h.categoryFriendlyName || "" }))
+              };
+            } else {
+              priced[idx] = { name: it.title, rawTitle: it.title, platform: it.platform, category: "", year: extractYear(it.title), cash: 0, voucher: 0, sell: 0, found: false, url: "#", score: 0, confidence: "none", alts: [] };
+            }
+          });
+        }
 
-        document.getElementById("lotCount").innerText = pricedItems.length;
-        document.getElementById("lotTotalCash").innerText = `$${totalCash.toFixed(2)}`;
-        document.getElementById("lotTotalVoucher").innerText = `$${totalVoucher.toFixed(2)}`;
+        lotState.items = priced;
+        renderLotTable();
+      } catch (err) {
+        console.error(err);
+        alert("Error pricing bulk items. Check internet connection.");
+      }
+    }
 
-        const netCash = totalCash - askingPrice;
-        document.getElementById("lotNetProfit").innerText = `${netCash >= 0 ? '+' : ''}$${netCash.toFixed(2)}`;
-        document.getElementById("lotNetProfit").className = `text-base font-black ${netCash >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+    // Swap a row for one of its alternative matches (user confirms the right game)
+    function swapLotItem(idx, altIdx) {
+      const item = lotState.items[idx];
+      if (!item || !item.alts || !item.alts[altIdx]) return;
+      const alt = item.alts.splice(altIdx, 1)[0];
+      if (item.found) item.alts.unshift({ n: item.name, id: item.url.split("id=")[1] || "", c: item.cash, v: item.voucher, s: item.sell, score: item.score });
+      item.name = alt.n; item.cash = alt.c; item.voucher = alt.v; item.sell = alt.s; item.found = true;
+      item.url = `https://au.webuy.com/sell/product-detail?id=${alt.id}`; item.year = extractYear(alt.n);
+      if (alt.category) item.category = alt.category;
+      item.confidence = "high"; item.score = 1;
+      renderLotTable();
+    }
 
-        document.getElementById("lotTableBody").innerHTML = pricedItems.map(item => {
-          const ebaySoldUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true);
-          const ebaySoldLowUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true, "lowest");
-          const ebaySoldHighUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true, "highest");
-          return `
-          <tr class="hover:bg-slate-900/60 border-b border-slate-900">
+    function renderLotTable() {
+      const items = lotState.items;
+      const sorted = items.map((it, i) => ({ it, i })).sort((a, b) => b.it.cash - a.it.cash);
+      let totalCash = 0, totalVoucher = 0, foundCount = 0, checkCount = 0, missCount = 0;
+      for (const it of items) {
+        if (it.found) { totalCash += it.cash; totalVoucher += it.voucher; foundCount++; }
+        if (it.confidence === "check") checkCount++;
+        if (!it.found) missCount++;
+      }
+      document.getElementById("lotCount").innerText = `${foundCount}${items.length !== foundCount ? ` / ${items.length}` : ""}`;
+      document.getElementById("lotTotalCash").innerText = `$${totalCash.toFixed(2)}`;
+      document.getElementById("lotTotalVoucher").innerText = `$${totalVoucher.toFixed(2)}`;
+      const netCash = totalCash - lotState.askingPrice;
+      document.getElementById("lotNetProfit").innerText = `${netCash >= 0 ? '+' : ''}$${netCash.toFixed(2)}`;
+      document.getElementById("lotNetProfit").className = `text-base font-black ${netCash >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+
+      const badge = (item) => {
+        const pf = item.found && item.category ? item.category.replace(/\s*(Games|Software)$/, "") : item.platform;
+        let html = pf ? `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-bold">${escapeHtml(pf)}</span>` : "";
+        if (item.confidence === "check") html += `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-700/40 text-[9px] font-bold">Check match</span>`;
+        if (!item.found) html += `<span class="px-1.5 py-0.5 rounded bg-rose-950/60 text-rose-400 border border-rose-800/40 text-[9px] font-bold">Not matched</span>`;
+        return html;
+      };
+      const altChips = (item, idx) => {
+        if (!item.alts || !item.alts.length) return "";
+        const label = item.found ? "Or:" : "Did you mean:";
+        return `<div class="mt-1 flex items-center gap-1 flex-wrap text-[10px]"><span class="text-slate-500">${label}</span>${item.alts.slice(0, 3).map((a, ai) =>
+          `<button type="button" onclick="swapLotItem(${idx}, ${ai})" class="px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900 text-slate-300 hover:border-purple-500 hover:text-white">${escapeHtml(a.n)}</button>`).join("")}</div>`;
+      };
+
+      document.getElementById("lotTableBody").innerHTML = sorted.map(({ it: item, i: idx }) => {
+        const ebaySoldUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true);
+        const ebaySoldLowUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true, "lowest");
+        const ebaySoldHighUrl = getEbaySearchUrl(item.name || item.rawTitle, item.category, "", true, "highest");
+        const rowTint = !item.found ? "bg-rose-950/10" : (item.confidence === "check" ? "bg-amber-950/10" : "");
+        return `
+          <tr class="hover:bg-slate-900/60 border-b border-slate-900 ${rowTint}">
             <td class="p-2 font-medium">
               <div class="flex items-center gap-1.5 flex-wrap">
-                ${item.found ? `
-                  <a href="${item.url}" target="_blank" class="hover:text-blue-400 hover:underline text-white font-semibold">${escapeHtml(item.name)}</a>
-                ` : `
-                  <span class="text-rose-300 font-semibold">${escapeHtml(item.name)}</span>
-                  <span class="px-1.5 py-0.5 rounded bg-rose-950/60 text-rose-400 border border-rose-800/40 text-[9px] font-bold">Not on CeX</span>
-                `}
-                ${item.found && item.category ? `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-bold">${escapeHtml(item.category.replace(/\s*(Games|Software)$/, ""))}</span>` : (item.platform ? `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px] font-bold">${escapeHtml(item.platform)}</span>` : '')}
+                ${item.found ? `<a href="${item.url}" target="_blank" class="hover:text-blue-400 hover:underline text-white font-semibold">${escapeHtml(item.name)}</a>`
+                             : `<span class="text-rose-300 font-semibold">${escapeHtml(item.name)}</span>`}
+                ${badge(item)}
                 ${item.year ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">📅 ${item.year}</span>` : ''}
               </div>
+              ${item.found && item.rawTitle && matchNorm(item.rawTitle) !== matchNorm(item.name) ? `<div class="text-[10px] text-slate-500 mt-0.5">read as "${escapeHtml(item.rawTitle)}"</div>` : ''}
+              ${altChips(item, idx)}
               <div class="mt-1 flex items-center gap-1.5 flex-wrap">
                 <a href="${ebaySoldUrl}" target="_blank" class="inline-flex items-center gap-1 text-[10px] font-bold ${
                   item.found ? 'text-blue-400 hover:text-blue-300 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-800/40' : 'text-white bg-blue-600 hover:bg-blue-500 px-2 py-0.5 rounded shadow-sm shadow-blue-600/30'
@@ -2588,26 +2681,16 @@
                   <span>${item.found ? '90d Sold' : 'Check 90d Sold'}</span>
                   <i data-lucide="external-link" class="w-2.5 h-2.5 opacity-70"></i>
                 </a>
-                <a href="${ebaySoldLowUrl}" target="_blank" class="inline-flex items-center gap-0.5 text-[9px] font-bold text-emerald-300 bg-slate-800 px-1.5 py-0.5 rounded border border-emerald-900/40 hover:bg-slate-700">
-                  <span>Low</span>
-                </a>
-                <a href="${ebaySoldHighUrl}" target="_blank" class="inline-flex items-center gap-0.5 text-[9px] font-bold text-purple-300 bg-slate-800 px-1.5 py-0.5 rounded border border-purple-900/40 hover:bg-slate-700">
-                  <span>High</span>
-                </a>
+                <a href="${ebaySoldLowUrl}" target="_blank" class="inline-flex items-center gap-0.5 text-[9px] font-bold text-emerald-300 bg-slate-800 px-1.5 py-0.5 rounded border border-emerald-900/40 hover:bg-slate-700"><span>Low</span></a>
+                <a href="${ebaySoldHighUrl}" target="_blank" class="inline-flex items-center gap-0.5 text-[9px] font-bold text-purple-300 bg-slate-800 px-1.5 py-0.5 rounded border border-purple-900/40 hover:bg-slate-700"><span>High</span></a>
               </div>
             </td>
             <td class="p-2 text-right font-bold text-emerald-400">${item.cash > 0 ? `$${item.cash.toFixed(2)}` : '<span class="text-slate-600">$0.00</span>'}</td>
             <td class="p-2 text-right font-bold text-blue-400">${item.voucher > 0 ? `$${item.voucher.toFixed(2)}` : '<span class="text-slate-600">$0.00</span>'}</td>
             <td class="p-2 text-right text-slate-400">${item.sell > 0 ? `$${item.sell.toFixed(2)}` : '<span class="text-slate-600">-</span>'}</td>
-          </tr>
-          `;
-        }).join("");
-        lucide.createIcons();
-
-      } catch (err) {
-        console.error(err);
-        alert("Error pricing bulk items. Check internet connection.");
-      }
+          </tr>`;
+      }).join("") + ((checkCount || missCount) ? `<tr><td colspan="4" class="p-2 text-[10px] text-slate-500 text-center">${checkCount ? `${checkCount} amber row(s): tap an "Or:" option if the wrong game was picked. ` : ""}${missCount ? `${missCount} red row(s) weren't matched and aren't counted in totals; tap a suggestion or fix the title above.` : ""}</td></tr>` : "");
+      lucide.createIcons();
     }
 </script>
 </body>
