@@ -1547,13 +1547,18 @@
                 <i data-lucide="clipboard" class="w-3.5 h-3.5"></i>
                 <span>Paste Copied Spines</span>
               </button>
-              <button type="button" onclick="document.getElementById('lotTextarea').value=''" class="text-[11px] text-slate-500 hover:text-slate-300 cursor-pointer">
+              <button type="button" onclick="tidyLotText()" class="text-[11px] text-emerald-400 hover:text-emerald-300 font-bold flex items-center gap-1 cursor-pointer">
+                <i data-lucide="wand-2" class="w-3 h-3"></i>
+                <span>Tidy Text</span>
+              </button>
+              <button type="button" onclick="document.getElementById('lotTextarea').value=''; const st=document.getElementById('lotTidyStatus'); if (st) st.innerText='';" class="text-[11px] text-slate-500 hover:text-slate-300 cursor-pointer">
                 Clear Text
               </button>
             </div>
           </div>
           <textarea id="lotTextarea" rows="5" placeholder="Spider-Man PS4&#10;The Orange Box Xbox 360&#10;NBA Jam PS3&#10;Fire Pro Wrestling World PS4&#10;Mario Kart Wii..."
                     class="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-purple-500 font-mono"></textarea>
+          <p id="lotTidyStatus" class="text-[10px] text-slate-500 mt-1">Paste a Live Text dump or photo scan as-is. Tidy Text turns it into one "Title | Platform" per line.</p>
           
           <!-- Mobile Live Text Helper -->
           <div class="mt-2 bg-slate-900/60 border border-slate-800/80 rounded-xl p-2.5 text-[11px] text-slate-400 space-y-1">
@@ -1905,8 +1910,9 @@
         const textarea = document.getElementById("lotTextarea");
         const existing = textarea.value.trim();
         textarea.value = existing ? `${existing}\n${text.trim()}` : text.trim();
+        tidyLotText();
       } catch (err) {
-        alert("Clipboard permission blocked. Long-press inside the box below to paste.");
+        alert("Clipboard permission blocked. Long-press inside the box below to paste, then tap Tidy Text.");
       }
     }
 
@@ -2012,6 +2018,105 @@
       [/\b(wrest\s*ling)\b/gi, "Wrestling"],
       [/\b(toi\s*clancy)\b/gi, "Tom Clancy"]
     ];
+
+    // ===== Platform detection & "Title | Platform" tidy step =====
+    // Live Text / OCR dumps list the platform badge ("XBOX 360", "PS4") as its own line right before
+    // or after the title. We track it and attach it to the title, then use the matching CeX category
+    // to steer the search toward the right platform.
+    const PLATFORM_DEFS = [
+      { rx: /\bxbox\s*series(\s*[xs])?\b/i, label: "Xbox Series", category: "Xbox Series Games" },
+      { rx: /\bxbox\s*one\b/i, label: "Xbox One", category: "Xbox One Games" },
+      { rx: /\bxbox\s*360\b/i, label: "Xbox 360", category: "Xbox 360 Games" },
+      { rx: /\bxbox\b/i, label: "Xbox", category: "Xbox Games" },
+      { rx: /\b(ps\s*5|playstation\s*5)\b/i, label: "PS5", category: "Playstation5 Games" },
+      { rx: /\b(ps\s*4|playstation\s*4)\b/i, label: "PS4", category: "Playstation4 Games" },
+      { rx: /\b(ps\s*3|playstation\s*3)\b/i, label: "PS3", category: "Playstation3 Games" },
+      { rx: /\b(ps\s*2|playstation\s*2|playstation\.2|playstation\s*\.?\s*2)\b/i, label: "PS2", category: "Playstation2 Games" },
+      { rx: /\b(ps\s*1|ps\s*one|playstation\s*1|playstation)\b/i, label: "PS1", category: "Playstation1 Software" },
+      { rx: /\b(ps\s*vita|vita)\b/i, label: "PS Vita", category: "PS Vita Games" },
+      { rx: /\bpsp\b/i, label: "PSP", category: "PSP Games" },
+      { rx: /\b(nintendo\s*)?switch\s*2\b/i, label: "Switch 2", category: "Switch 2 Games" },
+      { rx: /\b(nintendo\s*)?switch\b/i, label: "Switch", category: "Switch Software" },
+      { rx: /\bwii\s*u\b/i, label: "Wii U", category: "Wii U Games" },
+      { rx: /\b(nintendo\s*)?wii\b/i, label: "Wii", category: "Wii Games" },
+      { rx: /\b(nintendo\s*)?3ds\b/i, label: "3DS", category: "3DS Games" },
+      { rx: /\b(nintendo\s*)?ds\b/i, label: "DS", category: "Nintendo DS Games" },
+      { rx: /\b(nintendo\s*)?game\s*cube\b/i, label: "GameCube", category: "GameCube Games" },
+      { rx: /\b(nintendo\s*64|n64)\b/i, label: "N64", category: "Nintendo 64 Software" },
+      { rx: /\b(super\s*nintendo|snes)\b/i, label: "SNES", category: "Super NES Software" },
+      { rx: /\b(game\s*boy\s*advance|gba)\b/i, label: "GBA", category: "GBA Software" },
+      { rx: /\b(mega\s*drive|genesis)\b/i, label: "Mega Drive", category: "Mega Drive Software" },
+      { rx: /\bdreamcast\b/i, label: "Dreamcast", category: "Dreamcast Software" },
+      { rx: /\bpc\s*(dvd|cd)?(-?rom)?\b/i, label: "PC", category: "PC Games" }
+    ];
+
+    function matchPlatform(text) {
+      for (const def of PLATFORM_DEFS) if (def.rx.test(text)) return def;
+      return null;
+    }
+    // True when the line is nothing but a platform badge (plus punctuation), e.g. "XBOX 360." or "XBOX*"
+    function isPlatformOnlyLine(line) {
+      const def = matchPlatform(line);
+      if (!def) return null;
+      const rest = line.replace(def.rx, "").replace(/[^A-Za-z0-9]+/g, "");
+      return rest.length === 0 ? def : null;
+    }
+
+    // Parse a raw dump (Live Text, OCR, or hand-typed) into [{ title, platform, category }].
+    function parseSpineDump(rawText) {
+      const items = [];
+      let currentPlatform = null;
+      for (const rawLine of (rawText || "").split("\n")) {
+        let line = rawLine.trim();
+        if (!line) continue;
+        // Already tidied: "Title | Platform"
+        let explicit = null;
+        if (line.includes("|")) {
+          const [t, pf] = line.split("|");
+          line = (t || "").trim();
+          explicit = matchPlatform(pf || "");
+        }
+        const only = isPlatformOnlyLine(line);
+        if (only) { currentPlatform = only; continue; }
+        // Inline platform e.g. "Spider-Man PS4", "Half-Life 2 Xbox"
+        let inline = null;
+        const m = matchPlatform(line);
+        if (m) {
+          // Don't treat words like "Sega Mega Drive Ultimate Collection" as the Mega Drive platform
+          const stripped = line.replace(m.rx, " ").replace(/\s+/g, " ").trim();
+          if (stripped.length >= 3 && m.label !== "Mega Drive" && m.label !== "PC") { inline = m; line = stripped; }
+        }
+        const cleaned = cleanAndFilterTitles(line);
+        if (!cleaned.length) continue;
+        const platform = explicit || inline || currentPlatform;
+        items.push({ title: cleaned[0], platform: platform ? platform.label : "", category: platform ? platform.category : "" });
+      }
+      // De-duplicate identical title+platform
+      const seen = new Set();
+      return items.filter(it => { const k = (it.title + "|" + it.platform).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+    }
+
+    function formatSpineItems(items) {
+      return items.map(it => it.platform ? `${it.title} | ${it.platform}` : it.title).join("\n");
+    }
+
+    // Button: tidy whatever is in the textarea into clean "Title | Platform" lines.
+    function tidyLotText() {
+      const ta = document.getElementById("lotTextarea");
+      const items = parseSpineDump(ta.value);
+      const status = document.getElementById("lotTidyStatus");
+      if (!items.length) {
+        if (status) { status.innerText = "Nothing recognisable yet. Paste your Live Text or type a title."; status.className = "text-[10px] text-amber-400"; }
+        return items;
+      }
+      ta.value = formatSpineItems(items);
+      if (status) {
+        const withPf = items.filter(i => i.platform).length;
+        status.innerText = `Tidied to ${items.length} titles${withPf ? `, ${withPf} with platform` : ""}. Edit anything that looks wrong, then Calculate.`;
+        status.className = "text-[10px] text-emerald-400";
+      }
+      return items;
+    }
 
     // Whole lines that Live Text / OCR lift off a spine but are never a title.
     const NOISE_LINE_RX = /^[\s\W]*(xbox(\s*(360|one|series\s*[xs]?))?|playstation\s*[1-5]?|ps[1-5]|nintendo(\s*(switch|wii|ds|3ds))?|wii\s*u?|switch|pal|ntsc|restricted|(ma|r)\s*\d{2}\s*\+?|pg|g|m|dm|oflc|pegi\s*\d*|valve|ea(\s*sports)?|thq|sega|capcom|ubisoft|activision|rockstar(\s*games)?|bethesda|konami|square\s*enix|2k(\s*games|\s*sports)?|warner\s*bros\.?|namco(\s*bandai)?|bandai\s*namco|codemasters|atari|midway|eidos|blu-?ray|dvd|kinect|move|playstation\s*network|xbox\s*live|only\s*on\s*playstation|greatest\s*hits|platinum|classics|essentials|best\s*sellers?|the\s*best|game\s*of\s*the\s*year(\s*edition)?|goty|five\s*games,?\s*one\s*box\.?)[\s\W]*$/i;
@@ -2330,7 +2435,10 @@
       const rawText = document.getElementById("lotTextarea").value.trim();
       if (!rawText) return alert("Please enter at least one title or take a photo.");
 
-      const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
+      const items = parseSpineDump(rawText);
+      if (!items.length) return alert("Couldn't find any game titles in that text. Tap Tidy Text or type a title.");
+      document.getElementById("lotTextarea").value = formatSpineItems(items);
+      const lines = items.map(it => it.title);
       const askingPrice = parseFloat(document.getElementById("lotAskingPrice").value || 0);
 
       const resArea = document.getElementById("lotResultsArea");
@@ -2338,20 +2446,38 @@
       document.getElementById("lotTableBody").innerHTML = `<tr><td colspan="4" class="text-center p-4 text-slate-400">Pricing ${lines.length} items on CeX Australia...</td></tr>`;
 
       try {
-        const requests = lines.map(line => ({
-          indexName: INDEX_NAME,
-          query: line,
-          filters: "boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND superCatFriendlyName:Gaming",
-          removeWordsIfNoResults: "allOptional",
-          hitsPerPage: 1
-        }));
+        // Two requests per item: (A) hard-filtered to the detected platform's CeX category,
+        // (B) unfiltered gaming fallback. Prefer A when it has a hit.
+        const baseFilters = "boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND superCatFriendlyName:Gaming";
+        const requests = [];
+        items.forEach(it => {
+          requests.push({
+            indexName: INDEX_NAME,
+            query: it.title,
+            filters: it.category ? `boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND categoryFriendlyName:"${it.category}"` : baseFilters,
+            removeWordsIfNoResults: "allOptional",
+            hitsPerPage: 1
+          });
+          requests.push({
+            indexName: INDEX_NAME,
+            query: it.title,
+            filters: baseFilters,
+            removeWordsIfNoResults: "allOptional",
+            hitsPerPage: 1
+          });
+        });
 
         const res = await fetch(ALGOLIA_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ requests })
         });
-        const data = await res.json();
+        const raw = await res.json();
+        // Collapse the pairs back to one result per item
+        const data = { results: items.map((it, i) => {
+          const a = raw.results[i * 2], b = raw.results[i * 2 + 1];
+          return (a && a.hits && a.hits.length) ? a : b;
+        }) };
 
         // Secondary fallback for non-gaming or movie discs that got 0 hits
         const missingIndices = [];
@@ -2401,6 +2527,7 @@
             pricedItems.push({
               name: hit.boxName,
               rawTitle: originalLine,
+              platform: items[idx].platform,
               category: hit.categoryFriendlyName || hit.categoryName || "",
               year: year,
               cash: cash,
@@ -2414,6 +2541,7 @@
             pricedItems.push({
               name: originalLine,
               rawTitle: originalLine,
+              platform: items[idx].platform,
               category: "",
               year: year,
               cash: 0,
@@ -2449,6 +2577,7 @@
                   <span class="text-rose-300 font-semibold">${escapeHtml(item.name)}</span>
                   <span class="px-1.5 py-0.5 rounded bg-rose-950/60 text-rose-400 border border-rose-800/40 text-[9px] font-bold">Not on CeX</span>
                 `}
+                ${item.found && item.category ? `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-bold">${escapeHtml(item.category.replace(/\s*(Games|Software)$/, ""))}</span>` : (item.platform ? `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px] font-bold">${escapeHtml(item.platform)}</span>` : '')}
                 ${item.year ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">📅 ${item.year}</span>` : ''}
               </div>
               <div class="mt-1 flex items-center gap-1.5 flex-wrap">
