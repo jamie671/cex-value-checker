@@ -394,7 +394,26 @@
     let displayLimit = 40;
     let html5QrCode = null;
 
+    // One-tap AI Vision setup: open the app once with ?gemini_key=AIza... on a device and the key is
+    // saved to this browser, AI Vision becomes the default scanner, and the key is removed from the URL.
+    function applyKeyFromUrl() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const key = (params.get("gemini_key") || "").trim();
+        if (!key) return;
+        localStorage.setItem("bulk_gemini_key", key);
+        localStorage.setItem("bulk_scanner_mode", "ai");
+        params.delete("gemini_key");
+        const clean = window.location.pathname + (params.toString() ? "?" + params.toString() : "") + window.location.hash;
+        history.replaceState(null, "", clean);
+        setTimeout(() => alert("AI Vision key saved on this device. Open Bulk Profit Evaluator and take a photo."), 300);
+      } catch (e) {
+        console.warn("Could not apply key from URL:", e);
+      }
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
+      applyKeyFromUrl();
       lucide.createIcons();
       renderQuickPills();
       renderSystemModal();
