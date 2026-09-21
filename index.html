@@ -242,7 +242,14 @@
     </div>
 
     <div class="flex-1 flex flex-col items-center justify-center max-w-sm mx-auto w-full my-4">
-      <div id="reader" class="w-full bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative"></div>
+      <div class="w-full relative">
+        <div id="reader" class="w-full bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative"></div>
+        <div id="bulkScanFlash" class="hidden absolute inset-0 rounded-2xl flex flex-col items-center justify-center text-center pointer-events-none">
+          <div id="bulkScanFlashIcon" class="text-5xl font-black">✓</div>
+          <div id="bulkScanFlashText" class="text-white font-bold text-lg mt-1">Added</div>
+          <div id="bulkScanFlashSub" class="text-white/80 text-sm mt-1">Next item in 2…</div>
+        </div>
+      </div>
       <p class="text-xs text-slate-400 mt-3 text-center" id="scannerHint">
         Point phone camera at the barcode on the back of the case.
       </p>
@@ -1309,6 +1316,7 @@
         document.getElementById("scannerTitle").innerText = "Scan Product Barcode";
         document.getElementById("scannerHint").innerText = "Point phone camera at the barcode on the back of the case.";
         document.getElementById("bulkScanStatus").classList.add("hidden");
+        document.getElementById("bulkScanFlash")?.classList.add("hidden");
         const st = document.getElementById("lotTidyStatus");
         const n = parseSpineDump(document.getElementById("lotTextarea").value).filter(it => it.gtin).length;
         if (st && n) { st.innerText = `${n} barcode${n === 1 ? "" : "s"} in your list. Tap Calculate to price them.`; st.className = "text-[10px] text-emerald-400"; }
@@ -1318,8 +1326,35 @@
     // ---- Bulk barcode scanning (many items in a row, into the bulk list) ----
     let bulkScanMode = false;
     let bulkScanLastCode = "", bulkScanLastAt = 0;
+    let bulkPausedUntil = 0;          // ignore decodes until this time (gives you 2s to swap items)
+    const BULK_SCAN_PAUSE_MS = 2000;
+    let bulkAudioCtx = null;
+
+    function unlockBulkAudio() {
+      try {
+        if (!bulkAudioCtx) bulkAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (bulkAudioCtx.state === "suspended") bulkAudioCtx.resume();
+      } catch (e) {}
+    }
+    function bulkBeep(kind) {
+      try {
+        if (!bulkAudioCtx) return;
+        const ctx = bulkAudioCtx, t = ctx.currentTime;
+        const osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        if (kind === "ok") { osc.frequency.setValueAtTime(880, t); osc.frequency.setValueAtTime(1320, t + 0.08); }
+        else { osc.frequency.setValueAtTime(220, t); }
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.3, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + (kind === "ok" ? 0.22 : 0.3));
+        osc.start(t); osc.stop(t + 0.32);
+      } catch (e) {}
+    }
+
     function startBulkBarcodeScan() {
       bulkScanMode = true;
+      bulkPausedUntil = 0;
+      unlockBulkAudio(); // must happen inside the tap for iOS to allow sound later
       const p = startBarcodeScanner(); // first thing, so the camera request stays inside the tap gesture
       document.getElementById("scannerTitle").innerText = "Scan barcodes, one after another";
       document.getElementById("bulkScanStatus").classList.remove("hidden");
@@ -1330,24 +1365,53 @@
       } catch (e) { console.warn(e); }
       return p;
     }
+
+    // Big overlay on the camera view, then a countdown before the next scan is accepted
+    function bulkFlash(kind, text) {
+      const box = document.getElementById("bulkScanFlash");
+      const icon = document.getElementById("bulkScanFlashIcon");
+      const main = document.getElementById("bulkScanFlashText");
+      const sub = document.getElementById("bulkScanFlashSub");
+      if (!box) return;
+      box.className = `absolute inset-0 rounded-2xl flex flex-col items-center justify-center text-center pointer-events-none ${kind === "ok" ? "bg-emerald-600/85" : "bg-amber-600/85"}`;
+      icon.innerText = kind === "ok" ? "✓" : "↺";
+      icon.className = "text-5xl font-black text-white";
+      main.innerText = text;
+      const pauseMs = kind === "ok" ? BULK_SCAN_PAUSE_MS : 1200;
+      bulkPausedUntil = Date.now() + pauseMs;
+      const tick = () => {
+        const left = bulkPausedUntil - Date.now();
+        if (left <= 0 || !bulkScanMode) { box.classList.add("hidden"); return; }
+        sub.innerText = `Next item in ${Math.ceil(left / 1000)}…`;
+        setTimeout(tick, 200);
+      };
+      tick();
+    }
+
     function addScannedCode(code) {
       const digits = String(code).replace(/\D/g, "");
       if (digits.length < 8 || digits.length > 14) return;
       const now = Date.now();
-      if (digits === bulkScanLastCode && now - bulkScanLastAt < 2500) return; // same code still in view
+      if (now < bulkPausedUntil) return;                                   // in the swap-items pause
+      if (digits === bulkScanLastCode && now - bulkScanLastAt < 4000) return; // same code still in view
       bulkScanLastCode = digits; bulkScanLastAt = now;
       const ta = document.getElementById("lotTextarea");
       const lines = ta.value.split("\n").map(l => l.trim()).filter(Boolean);
       if (lines.some(l => l.replace(/\D/g, "") === digits && /^\D*\d[\d\s-]*\d\D*$/.test(l))) {
         document.getElementById("bulkScanLast").innerText = `Already have ${digits}`;
         if (navigator.vibrate) navigator.vibrate([60, 60, 60]);
+        bulkBeep("dup");
+        bulkFlash("dup", "Already scanned");
         return;
       }
       lines.push(digits);
       ta.value = lines.join("\n");
-      if (navigator.vibrate) navigator.vibrate(120);
-      document.getElementById("bulkScanCount").innerText = lines.filter(l => /^\d{8,14}$/.test(l)).length;
+      if (navigator.vibrate) navigator.vibrate(150);
+      bulkBeep("ok");
+      const count = lines.filter(l => /^\d{8,14}$/.test(l)).length;
+      document.getElementById("bulkScanCount").innerText = count;
       document.getElementById("bulkScanLast").innerText = `Added ${digits}`;
+      bulkFlash("ok", `Added · ${count} in list`);
     }
 
     async function onBarcodeFound(code) {
