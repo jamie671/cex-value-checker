@@ -113,7 +113,7 @@ async function searchEbay(env, { gtin, q, cat, limit, exclude }) {
     p75: percentile(totals, 75),
     avg: totals.length ? Math.round((totals.reduce((a, b) => a + b, 0) / totals.length) * 100) / 100 : null,
     currency: items[0]?.currency || "AUD",
-    items: basis.slice(0, 8)
+    items: basis.slice(0, 50)
   };
 }
 
@@ -136,7 +136,7 @@ export default {
     if (gtin && !(gtin.length >= 8 && gtin.length <= 14)) return json({ error: "gtin must be 8-14 digits" }, 400, cors);
 
     // Edge cache: same lookup within an hour is free and instant
-    const cacheKey = new Request(`https://cache.local/ebay/search?gtin=${gtin}&q=${encodeURIComponent(q.toLowerCase())}&cat=${cat}&limit=${limit}&ex=${encodeURIComponent(exclude.join(","))}`);
+    const cacheKey = new Request(`https://cache.local/v2/ebay/search?gtin=${gtin}&q=${encodeURIComponent(q.toLowerCase())}&cat=${cat}&limit=${limit}&ex=${encodeURIComponent(exclude.join(","))}`);
     const cache = caches.default;
     const hit = await cache.match(cacheKey);
     if (hit) {

@@ -2198,11 +2198,11 @@
     const PLATFORM_DEFS = [
       { rx: /\bxbox\s*series(\s*[xs])?\b/i, label: "Xbox Series", category: "Xbox Series Games" },
       { rx: /\bxbox\s*one\b/i, label: "Xbox One", category: "Xbox One Games" },
-      { rx: /\bxbox\s*360\b/i, label: "Xbox 360", category: "Xbox 360 Games" },
+      { rx: /\b(x?b[o0]?x\s*3[6s][o0u]|xbox\s*360)\b/i, label: "Xbox 360", category: "Xbox 360 Games" },
       { rx: /\bxbox\b/i, label: "Xbox", category: "Xbox Games" },
       { rx: /\b(ps\s*5|playstation\s*5)\b/i, label: "PS5", category: "Playstation5 Games" },
       { rx: /\b(ps\s*4|playstation\s*4)\b/i, label: "PS4", category: "Playstation4 Games" },
-      { rx: /\b(ps\s*3|playstation\s*3)\b/i, label: "PS3", category: "Playstation3 Games" },
+      { rx: /\b(ps\s*3|p[s5]3|playstation\s*3)\b/i, label: "PS3", category: "Playstation3 Games" },
       { rx: /\b(ps\s*2|playstation\s*\.?\s*[2zc])\b/i, label: "PS2", category: "Playstation2 Games" },
       { rx: /\b(ps\s*1|ps\s*one|playstation\s*1|playstation)\b/i, label: "PS1", category: "Playstation1 Software" },
       { rx: /\b(ps\s*vita|vita)\b/i, label: "PS Vita", category: "PS Vita Games" },
@@ -2234,17 +2234,40 @@
     function isPlatformOnlyLine(line) {
       const def = matchPlatform(line);
       if (!def) return null;
-      const rest = line.replace(def.rx, "").replace(/[^A-Za-z0-9]+/g, "");
-      return rest.length === 0 ? def : null;
+      const rest = line.replace(def.rx, " ")
+        .replace(/\b(disc|classics|platinum|essentials|greatest\s*hits|hd|video|game|games|only|combo|pack)\b/gi, " ")
+        .replace(/[^A-Za-z0-9]+/g, "");
+      return rest.length <= 1 ? def : null;
     }
 
+    // Disc serial prefix -> platform (PS1/PS2 split by number: SLES/SCES 5xxxx and SLUS/SCUS 2xxxx are PS2)
+    function platformFromSerial(line) {
+      const m = line.match(/\b(s[lc][eu]s|b[lc][eua]s|np[eu][abz]|cusa|plas|ppsa|u[lc][eu][sm]|pcs[abefg])\b\s*[-\s]?\s*(\d{3,5})?/i);
+      if (!m) return null;
+      const pre = m[1].toLowerCase(), num = m[2] ? parseInt(m[2], 10) : null;
+      const byLabel = (l) => PLATFORM_DEFS.find(d => d.label === l) || null;
+      if (/^s[lc]es$/.test(pre)) return byLabel(num != null && num < 50000 ? "PS1" : "PS2");
+      if (/^s[lc]us$/.test(pre)) return byLabel(num != null && num < 20000 ? "PS1" : "PS2");
+      if (/^(b[lc][eua]s|np[eu][abz])$/.test(pre)) return byLabel("PS3");
+      if (/^(cusa|plas)$/.test(pre)) return byLabel("PS4");
+      if (pre === "ppsa") return byLabel("PS5");
+      if (/^u[lc][eu][sm]$/.test(pre)) return byLabel("PSP");
+      if (/^pcs/.test(pre)) return byLabel("PS Vita");
+      return null;
+    }
+
+    const PREFIX_LINE_RX = /^(tom\s*clancy['’]?s?|(walt\s*)?disney['’]?s?|sid\s*meier['’]?s?|cabela['’]?s|james\s*cameron['’]?s|clive\s*barker['’]?s|american\s*mcgee['’]?s|marvel|lego|dreamworks|pixar)$/i;
     // Parse a raw dump (Live Text, OCR, or hand-typed) into [{ title, platform, category }].
     function parseSpineDump(rawText) {
       const items = [];
       let currentPlatform = null;
+      let pendingPrefix = "";
+      const votes = new Map(); // platform label -> count of platform badges / serials seen anywhere in the dump
+      const vote = (def) => { if (def) votes.set(def.label, (votes.get(def.label) || 0) + 1); };
       for (const rawLine of (rawText || "").split("\n")) {
         let line = rawLine.trim();
         if (!line) continue;
+        vote(platformFromSerial(line));
         // Barcode line (EAN/UPC/ISBN): exact lookup, no fuzzy matching needed
         const bc = line.match(/^\D{0,2}(\d[\d\s-]{6,16}\d)\D{0,2}$/);
         if (bc) {
@@ -2262,7 +2285,7 @@
           explicit = matchPlatform(pf || "");
         }
         const only = isPlatformOnlyLine(line);
-        if (only) { currentPlatform = only; continue; }
+        if (only) { currentPlatform = only; vote(only); continue; }
         // Inline platform e.g. "Spider-Man PS4", "Half-Life 2 Xbox"
         let inline = null;
         const m = matchPlatform(line);
@@ -2271,10 +2294,23 @@
           const stripped = line.replace(m.rx, " ").replace(/\s+/g, " ").trim();
           if (stripped.length >= 3 && m.label !== "Mega Drive" && m.label !== "PC") { inline = m; line = stripped; }
         }
+        // Franchise prefix on its own line ("Tom Clancy's", "DiSNEY"): hold it and join it to the next title
+        if (PREFIX_LINE_RX.test(line.replace(/[™®©]/g, "").trim())) { pendingPrefix = line.replace(/[™®©]/g, "").trim(); continue; }
+        if (pendingPrefix) { line = `${pendingPrefix} ${line}`; pendingPrefix = ""; }
         const cleaned = cleanAndFilterTitles(line);
         if (!cleaned.length) continue;
         const platform = explicit || inline || currentPlatform;
         items.push({ title: cleaned[0], platform: platform ? platform.label : "", category: platform ? platform.category : "" });
+      }
+      // Live Text often lists all platform badges / serials as a separate column, so titles read before
+      // the first badge get none. If one platform dominates the dump, give it to every title without one.
+      const total = [...votes.values()].reduce((a, b) => a + b, 0);
+      if (total) {
+        const [topLabel, topCount] = [...votes.entries()].sort((a, b) => b[1] - a[1])[0];
+        const def = PLATFORM_DEFS.find(d => d.label === topLabel);
+        if (def && topCount / total >= 0.7) {
+          for (const it of items) if (!it.platform && !it.gtin) { it.platform = def.label; it.category = def.category; }
+        }
       }
       // De-duplicate identical title+platform (or barcode)
       const seen = new Set();
@@ -2313,7 +2349,7 @@
     // CUSA/PLAS (PS4), PPSA (PS5), ULES/UCES (PSP), PCSB (Vita) etc. Whole line = serial -> not a title.
     const SERIAL_LINE_RX = /^[\s\W]*(s[lc][eupak][smjs]|b[lc][eupaj][sm]|np[eu][abz]|cusa|plas|ppsa|u[lc][eu][sm]|pcs[abeg])[\s\W]*([\d\s\/\-]*[a-z]?)[\s\W]*$/i;
     // Taglines and edition fluff to strip from within a line.
-    const TAGLINE_RX = /\b(five\s*games,?\s*one\s*box|the\s*real\s*riding\s*simulator|the\s*real\s*driving\s*simulator|only\s*on\s*playstation|greatest\s*hits|platinum|classics|essentials|kinect\s*required|move\s*compatible)\b\.?/gi;
+    const TAGLINE_RX = /\b(infinite\s*possibilities\.?\s*endless\s*fun|five\s*games,?\s*one\s*box|the\s*real\s*riding\s*simulator|the\s*real\s*driving\s*simulator|only\s*on\s*playstation|greatest\s*hits|platinum|classics|essentials|kinect\s*required|move\s*compatible)\b\.?/gi;
 
     function cleanAndFilterTitles(rawText) {
       if (!rawText) return [];
@@ -2366,7 +2402,7 @@
         while (words.length > 1 && (words[0].length <= 2 && !["of", "in", "on", "to", "at", "ii", "iv", "ea", "2k", "go", "no", "up", "my", "we", "oh", "ok", "it", "be", "do", "me", "us", "so", "tv", "vs", "mx", "f1", "nba", "wwe", "fifa"].includes(words[0].toLowerCase()))) {
           words.shift();
         }
-        const keepTail = (w) => /^\d{1,2}$/.test(w) || /^(ii|iii|iv|vi|vii|ix|xi|x|v)$/i.test(w) || ["2k", "ea", "hd", "3d", "dx", "gt"].includes(w.toLowerCase());
+        const keepTail = (w) => /^\d{1,2}$/.test(w) || /^(ii|iii|iv|vi|vii|ix|xi|x|v)$/i.test(w) || ["2k", "ea", "hd", "3d", "dx", "gt", "ex", "go", "up", "on", "of", "vs"].includes(w.toLowerCase());
         while (words.length > 1 && words[words.length - 1].length <= 2 && !keepTail(words[words.length - 1])) {
           words.pop();
         }
@@ -2693,7 +2729,10 @@
     function bestCatalogMatches(query, catalog, n = 4) {
       const scored = new Array(catalog.length);
       for (let i = 0; i < catalog.length; i++) scored[i] = { it: catalog[i], s: scoreTitle(query, catalog[i].n) };
-      scored.sort((x, y) => y.s - x.s);
+      // Tie-break toward the plainer title: "Assassin's Creed III" over "... Freedom Edition"
+      const qn = matchNorm(query).split(" ").length;
+      const adj = (x) => x.s - 0.03 * Math.max(0, matchNorm(x.it.n).split(" ").length - qn);
+      scored.sort((x, y) => adj(y) - adj(x));
       return scored.slice(0, n);
     }
 
@@ -2762,6 +2801,7 @@
         }
         if (item.exclude) { params.set("exclude", item.exclude); params.set("limit", "50"); }
         else params.set("limit", "40");
+        params.set("v", "2");
         const res = await fetch(`${EBAY_PROXY_URL}/ebay/search?${params}`);
         if (!res.ok) return null;
         const d = await res.json();
@@ -2776,12 +2816,62 @@
       return out;
     }
 
+    // Clean a CeX product name into an eBay search phrase
+    function ebayQueryName(name) {
+      return (name || "").replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+-\s+.*$/, "")
+        .replace(/\b(BR\+DVD|BR|Bud\.?\s*Ver\.?|Ltd\.?\s*Ed\.?|\d+\s*Discs?|w\/.*$|\*[^*]*\*)/gi, " ")
+        .replace(/\s+/g, " ").trim();
+    }
+    const DISC_ONLY_EXCLUDE = "bundle,guitar,drum,drums,camera,buzzers,buzzer,microphone,microphones,mics,controller,wireless,instrument,kit";
+    function buildEbayQuery(it, pricedItem) {
+      const q = { ...it };
+      if (!it.gtin && pricedItem && pricedItem.found) {
+        if (/game only|no (camera|buzzers?|guitar|drums?|mic|microphones?|instrument|peripheral|controller)/i.test(pricedItem.name)) q.exclude = DISC_ONLY_EXCLUDE;
+        q.title = ebayQueryName(pricedItem.name) || it.title;
+      }
+      return q;
+    }
+    // Key words of a title (drop years, noise, 1-2 letter words, keep sequel numbers)
+    function keyTokens(str) {
+      return matchNorm(str).split(" ").filter(w => w && !/^(19|20)\d\d$/.test(w) && (w.length >= 3 || /^\d{1,2}$/.test(w) || /^(ii|iv|vi|ix|ex|2k)$/.test(w)))
+        .filter(w => !["and", "for", "with", "blu", "ray", "dvd", "disc", "discs", "edition", "game", "only", "ps2", "ps3", "ps4", "ps5", "xbox", "360", "one", "wii", "switch", "playstation", "sony", "microsoft", "nintendo", "pal"].includes(w));
+    }
+    // Keep only eBay listings that contain most of the title's key words, then recompute the price stats.
+    function relevantEbay(e, title) {
+      const keys = keyTokens(title);
+      const all = e.items || [];
+      if (!keys.length) return { ...e, relevant: all.length, listings: all };
+      const fold = (w) => matchFold(w);
+      const rel = all.filter(li => {
+        const lt = new Set(matchNorm(li.title).split(" ").map(fold));
+        const hit = keys.filter(k => lt.has(fold(k))).length;
+        return hit / keys.length >= 0.6;
+      });
+      const totals = rel.map(x => x.total).sort((a, b) => a - b);
+      const pct = (p) => { if (!totals.length) return null; const i = (p / 100) * (totals.length - 1), lo = Math.floor(i), hi = Math.ceil(i); return Math.round((totals[lo] + (totals[hi] - totals[lo]) * (i - lo)) * 100) / 100; };
+      return { ...e, relevant: rel.length, listings: rel, low: totals[0] ?? null, p25: pct(25), median: pct(50) };
+    }
+    function attachEbay(pricedItem, e, queryTitle) {
+      if (!e) { pricedItem.ebay = null; return; }
+      const r = pricedItem.gtin ? { ...e, relevant: (e.items || []).length, listings: e.items || [] } : relevantEbay(e, queryTitle);
+      const top = r.listings[0] || null;
+      pricedItem.ebay = { low: r.low, p25: r.p25, median: r.median, count: e.count, returned: r.listings.length, relevant: r.relevant, top, url: top?.url || null, query: queryTitle };
+    }
+    async function refreshItemEbay(item) {
+      const base = { title: item.rawTitle, gtin: item.gtin, platform: item.platform, category: item.category };
+      const q = buildEbayQuery(base, item);
+      attachEbay(item, await ebayLookup(q, lotState.mode || "games"), q.title);
+    }
+
     // Profit maths for one priced item; fills item.sell, item.ebayNet, item.cexNet, item.verdict, item.route
     function computeVerdict(item) {
       const { itemCost, postage } = lotState.settings;
       const e = item.ebay;
       let sell = null;
       if (e && e.returned > 0) sell = item.gtin ? (e.low ?? e.p25 ?? e.median) : (e.p25 ?? e.median ?? e.low);
+      // CeX's own shelf price is a good ceiling: eBay far above it usually means bundles or special editions
+      item.ebayCapped = false;
+      if (sell != null && item.found && item.sell > 0 && sell > Math.max(item.sell * 2, item.sell + 15)) { sell = item.sell; item.ebayCapped = true; }
       item.ebaySell = sell;
       item.ebayNet = sell != null ? Math.round((sell * (1 - EBAY_FEE_RATE) - EBAY_FEE_FIXED - postage - itemCost) * 100) / 100 : null;
       // CeX only buys Blu-rays: a DVD in hand can't be sold there even if the Blu-ray edition matched
@@ -2794,6 +2884,14 @@
       else if (item.bestNet >= 4) item.verdict = "buy";
       else if (item.bestNet >= 0) item.verdict = "marginal";
       else item.verdict = "leave";
+      // Thin evidence can't make a BUY: fewer than 5 matching eBay listings (text search) with no CeX route
+      item.thin = !item.gtin && item.route === "ebay" && e && e.returned > 0 && e.returned < 5;
+      if (item.verdict === "buy" && item.thin) item.verdict = "marginal";
+      // Games/Movies: a line CeX couldn't identify is usually misread text, so its eBay-only price needs confirming
+      const cexMode = !!(LOT_MODES[lotState.mode || "games"] || {}).cex;
+      if (cexMode && !item.found && !item.gtin && !item.confirmed && (item.verdict === "buy" || item.verdict === "marginal")) item.verdict = "verify";
+      // An unconfirmed "Check match" must be confirmed before it counts
+      if ((item.verdict === "buy" || item.verdict === "marginal") && item.found && item.confidence === "check" && !item.confirmed) item.verdict = "verify";
     }
 
     async function evaluateLot() {
@@ -2820,9 +2918,13 @@
         const priced = new Array(items.length);
         const blank = (it) => ({ name: it.gtin ? `Barcode ${it.gtin}` : it.title, rawTitle: it.title, gtin: it.gtin || "", platform: it.platform, category: it.category || "",
           year: extractYear(it.title), cash: 0, voucher: 0, sell: 0, found: false, url: "#", score: 0, confidence: "none", alts: [] });
+        const oneWord = (t) => keyTokens(t).length <= 1;
+        const wordCount = (t) => matchNorm(t).split(" ").filter(Boolean).length;
+        const EDITION_RX = /\b(freedom|collectors?|limited|ltd|special|deluxe|premium|gold|steelbook|signature|legendary|prestige|ultimate|anniversary|complete|goty|platinum)\b/i;
+        const addsEdition = (query, title) => EDITION_RX.test(title) && !EDITION_RX.test(query);
         const fromHit = (it, hit, score) => ({ name: hit.boxName, rawTitle: it.title, gtin: it.gtin || "", platform: it.platform, category: hit.categoryFriendlyName || hit.categoryName || "",
           year: extractYear(hit.boxName), cash: parseFloat(hit.cashPriceCalculated || 0), voucher: parseFloat(hit.exchangePriceCalculated || 0), sell: parseFloat(hit.sellPrice || 0),
-          found: true, url: `https://au.webuy.com/sell/product-detail?id=${hit.boxId}`, score, confidence: score >= MATCH_HIGH ? "high" : "check", alts: [] });
+          found: true, url: `https://au.webuy.com/sell/product-detail?id=${hit.boxId}`, score, confidence: (score >= MATCH_HIGH && !(it.title && !it.gtin && ((oneWord(it.title) && wordCount(hit.boxName) > wordCount(it.title)) || addsEdition(it.title, hit.boxName)))) ? "high" : "check", alts: [] });
 
         // ---- 1. CeX ----
         // 1a. Barcodes: CeX boxId IS the EAN, so an exact query finds the product in any category
@@ -2869,7 +2971,7 @@
             const cat = it.category && catalogs[it.category];
             if (!cat) { searchQueue.push(idx); return; }
             const m = bestCatalogMatches(it.title, cat, 4), top = m[0];
-            if (top && top.s >= MATCH_LOW) priced[idx] = catalogHitToItem(top.it, it, top.s, top.s >= MATCH_HIGH ? "high" : "check", m.slice(1).filter(x => x.s >= 0.25));
+            if (top && top.s >= MATCH_LOW) priced[idx] = catalogHitToItem(top.it, it, top.s, (top.s >= MATCH_HIGH && !(oneWord(it.title) && wordCount(top.it.n) > wordCount(it.title)) && !addsEdition(it.title, top.it.n)) ? "high" : "check", m.slice(1).filter(x => x.s >= 0.25));
             else priced[idx] = { ...blank(it), score: top ? top.s : 0, alts: m.filter(x => x.s >= 0.2).map(x => ({ n: x.it.n, id: x.it.id, c: x.it.c, v: x.it.v, s: x.it.s, score: x.s })) };
           });
           if (searchQueue.length) {
@@ -2908,24 +3010,18 @@
         // ---- 2. eBay AU for everything ----
         let done = 0;
         setBusy(`Checking eBay AU prices (0 / ${items.length})...`);
+        const queryTitles = [];
         const ebayResults = await mapLimit(items, 4, async (it, i) => {
-          // For text titles, search eBay with the CeX-resolved name when we have a confident one (cleaner than OCR text)
-          const q = { ...it };
-          if (!it.gtin && priced[i].found && priced[i].confidence === "high") {
-            const cexName = priced[i].name;
-            // Disc-only CeX items ("Game Only", "No Camera", "No Buzzers"): keep peripheral bundles out of the eBay price
-            if (/game only|no (camera|buzzers?|guitar|drums?|mic|microphones?|instrument|peripheral|controller)/i.test(cexName)) {
-              q.exclude = "bundle,guitar,drum,drums,camera,buzzers,buzzer,microphone,microphones,mics,controller,wireless,instrument,kit";
-            }
-            q.title = cexName.replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+-\s+.*$/, "").replace(/\s+/g, " ").trim();
-          }
+          // Search eBay with the matched CeX name (cleaner than OCR text); keep bundles out for disc-only items
+          const q = buildEbayQuery(it, priced[i]);
+          queryTitles[i] = q.title;
           const r = await ebayLookup(q, mode);
           done++; setBusy(`Checking eBay AU prices (${done} / ${items.length})...`);
           return r;
         });
         items.forEach((it, i) => {
           const e = ebayResults[i];
-          priced[i].ebay = e ? { low: e.low, p25: e.p25, median: e.median, count: e.count, returned: e.returned, top: e.items?.[0] || null, url: e.items?.[0]?.url || null } : null;
+          attachEbay(priced[i], e, queryTitles[i] || it.title);
           // Barcode items with no CeX name: take the title from the eBay listing
           if (!priced[i].found && it.gtin && e && e.items && e.items[0]) {
             priced[i].name = e.items[0].title.replace(/\s+/g, " ").slice(0, 90);
@@ -2992,6 +3088,8 @@
       computeVerdict(item);
       syncLotTextarea();
       renderLotTable();
+      // eBay price must follow the newly chosen item
+      refreshItemEbay(item).then(() => { computeVerdict(item); renderLotTable(); }).catch(() => {});
     }
     // Accept the current match on an amber row without changing it
     function confirmLotItem(idx) {
@@ -3014,7 +3112,7 @@
       const mode = lotState.mode || "games";
       const media = mode !== "games";
       items.forEach(computeVerdict);
-      const vRank = { buy: 0, marginal: 1, leave: 2, nodata: 3 };
+      const vRank = { buy: 0, verify: 1, marginal: 2, leave: 3, nodata: 4 };
       const attnRank = (it) => !it.found && !it.ebay ? 0 : (it.confidence === "check" ? 1 : 2);
       const sorted = items.map((it, i) => ({ it, i })).sort((a, b) => media
         ? ((vRank[a.it.verdict] - vRank[b.it.verdict]) || ((b.it.bestNet ?? -99) - (a.it.bestNet ?? -99)))
@@ -3049,6 +3147,7 @@
 
       const chip = (txt, cls) => `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${cls}">${txt}</span>`;
       const verdictChip = (it) => it.verdict === "buy" ? chip(`BUY · +${money(it.bestNet)}`, "bg-emerald-600 text-white")
+        : it.verdict === "verify" ? chip(`Confirm match · +${money(it.bestNet)}?`, "bg-amber-500/20 text-amber-200 border border-amber-600/50")
         : it.verdict === "marginal" ? chip(`Marginal · +${money(it.bestNet)}`, "bg-amber-500/20 text-amber-300 border border-amber-700/40")
         : it.verdict === "leave" ? chip(`Leave · -${money(Math.abs(it.bestNet))}`, "bg-slate-800 text-slate-400")
         : chip("No price data", "bg-slate-800 text-slate-500");
@@ -3058,15 +3157,15 @@
       };
       const ebayLine = (item) => {
         const e = item.ebay;
-        if (!e || !e.returned) return `<div class="text-[11px] text-slate-500 mt-1">eBay AU: no current listings found${item.gtin ? " for this barcode" : ""}</div>`;
+        if (!e || !e.returned) return `<div class="text-[11px] text-slate-500 mt-1">eBay AU: ${e && e.count ? "no listings actually matching this title" : "no current listings found"}${item.gtin ? " for this barcode" : ""}</div>`;
         const basis = item.gtin ? "lowest" : "typical low";
         const net = item.ebayNet;
         return `<div class="flex items-baseline gap-2 mt-1 text-[11px] flex-wrap">
           <a href="${e.url || "#"}" target="_blank" class="text-blue-300 hover:underline font-bold">eBay</a>
           <span><span class="text-white font-bold">${money(item.ebaySell)}</span> <span class="text-slate-500">${basis} incl. post</span></span>
-          <span class="text-slate-500">${e.count} listing${e.count === 1 ? "" : "s"}</span>
+          <span class="text-slate-500">${e.returned} matching listing${e.returned === 1 ? "" : "s"}</span>
           <span class="${net >= 0 ? "text-emerald-400" : "text-rose-400"} font-bold">${net >= 0 ? "+" : "-"}${money(Math.abs(net))} net</span>
-        </div>`;
+        </div>${item.ebayCapped ? `<div class="text-[10px] text-amber-400/80">eBay listings look like bundles or special editions, so CeX's shelf price is used instead</div>` : ""}${item.thin ? `<div class="text-[10px] text-amber-400/80">Only ${e.returned} matching listing${e.returned === 1 ? "" : "s"}, not enough to call it a buy</div>` : ""}`;
       };
       const cexLine = (item) => {
         if (!item.found) return media && LOT_MODES[mode].cex ? `<div class="text-[11px] text-slate-500 mt-1">CeX: not stocked</div>` : "";
