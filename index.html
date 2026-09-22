@@ -260,6 +260,9 @@
     </div>
 
     <div class="max-w-sm mx-auto w-full pb-4 space-y-2">
+      <button type="button" id="btnBulkFinished" onclick="finishBulkScan()" class="hidden w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white font-black rounded-xl text-base shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2">
+        <i data-lucide="check-circle-2" class="w-5 h-5"></i> Finished? Price them
+      </button>
       <div class="flex items-center gap-2">
         <input type="text" id="manualBarcodeInput" placeholder="Or enter barcode numbers..." 
                class="flex-1 px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-red-500">
@@ -1294,7 +1297,7 @@
             await tryStart({ facingMode: "user" });
           }
         }
-        hint.innerText = bulkScanMode ? "Point at each barcode in turn. Tap ✕ when you've done the pile." : "Point phone camera at the barcode on the back of the case.";
+        hint.innerText = bulkScanMode ? "Point at each barcode in turn. Tap Finished when you've done the pile." : "Point phone camera at the barcode on the back of the case.";
       } catch (err) {
         console.warn("Camera start error:", err);
         const msg = String(err && (err.message || err));
@@ -1317,6 +1320,7 @@
         document.getElementById("scannerHint").innerText = "Point phone camera at the barcode on the back of the case.";
         document.getElementById("bulkScanStatus").classList.add("hidden");
         document.getElementById("bulkScanFlash")?.classList.add("hidden");
+        document.getElementById("btnBulkFinished")?.classList.add("hidden");
         const st = document.getElementById("lotTidyStatus");
         const n = parseSpineDump(document.getElementById("lotTextarea").value).filter(it => it.gtin).length;
         if (st && n) { st.innerText = `${n} barcode${n === 1 ? "" : "s"} in your list. Tap Calculate to price them.`; st.className = "text-[10px] text-emerald-400"; }
@@ -1358,10 +1362,11 @@
       const p = startBarcodeScanner(); // first thing, so the camera request stays inside the tap gesture
       document.getElementById("scannerTitle").innerText = "Scan barcodes, one after another";
       document.getElementById("bulkScanStatus").classList.remove("hidden");
+      document.getElementById("btnBulkFinished").classList.remove("hidden");
       try {
         const existing = parseSpineDump(document.getElementById("lotTextarea").value).filter(it => it.gtin).length;
         document.getElementById("bulkScanCount").innerText = existing;
-        document.getElementById("bulkScanLast").innerText = existing ? `${existing} already in the list` : "Keep scanning, tap ✕ when done";
+        document.getElementById("bulkScanLast").innerText = existing ? `${existing} already in the list` : "Keep scanning, tap Finished when done";
       } catch (e) { console.warn(e); }
       return p;
     }
@@ -1457,8 +1462,19 @@
     }
 
     function handleManualBarcode() {
-      const code = document.getElementById("manualBarcodeInput").value.trim();
-      if (code) onBarcodeFound(code);
+      const inp = document.getElementById("manualBarcodeInput");
+      const code = inp.value.trim();
+      if (!code) return;
+      if (bulkScanMode) { bulkPausedUntil = 0; bulkScanLastCode = ""; addScannedCode(code); inp.value = ""; return; }
+      onBarcodeFound(code);
+    }
+
+    // --- 3. Finished: close the camera and price everything straight away
+    async function finishBulkScan() {
+      stopBarcodeScanner();
+      const n = parseSpineDump(document.getElementById("lotTextarea").value).length;
+      if (!n) return;
+      await evaluateLot();
     }
 
     function toggleExportMenu() {
@@ -2187,7 +2203,7 @@
       { rx: /\b(ps\s*5|playstation\s*5)\b/i, label: "PS5", category: "Playstation5 Games" },
       { rx: /\b(ps\s*4|playstation\s*4)\b/i, label: "PS4", category: "Playstation4 Games" },
       { rx: /\b(ps\s*3|playstation\s*3)\b/i, label: "PS3", category: "Playstation3 Games" },
-      { rx: /\b(ps\s*2|playstation\s*2|playstation\.2|playstation\s*\.?\s*2)\b/i, label: "PS2", category: "Playstation2 Games" },
+      { rx: /\b(ps\s*2|playstation\s*\.?\s*[2zc])\b/i, label: "PS2", category: "Playstation2 Games" },
       { rx: /\b(ps\s*1|ps\s*one|playstation\s*1|playstation)\b/i, label: "PS1", category: "Playstation1 Software" },
       { rx: /\b(ps\s*vita|vita)\b/i, label: "PS Vita", category: "PS Vita Games" },
       { rx: /\bpsp\b/i, label: "PSP", category: "PSP Games" },
@@ -2275,7 +2291,11 @@
       const items = parseSpineDump(ta.value);
       const status = document.getElementById("lotTidyStatus");
       if (!items.length) {
-        if (status) { status.innerText = "Nothing recognisable yet. Paste your Live Text or type a title."; status.className = "text-[10px] text-amber-400"; }
+        const serials = (ta.value.match(/\b(sles|sces|slus|scus|bles|bces|blus|cusa|plas|ppsa)\b/gi) || []).length;
+        const msg = serials
+          ? "Live Text only picked up the disc serial numbers (SLES, CUSA...). In Photos, press and hold on a title or tap Select All so it copies the game names too."
+          : "Nothing recognisable yet. Paste your Live Text or type a title.";
+        if (status) { status.innerText = msg; status.className = "text-[10px] text-amber-400"; }
         return items;
       }
       ta.value = formatSpineItems(items);
@@ -2289,6 +2309,9 @@
 
     // Whole lines that Live Text / OCR lift off a spine but are never a title.
     const NOISE_LINE_RX = /^[\s\W]*(xbox(\s*(360|one|series\s*[xs]?))?|playstation\s*[1-5]?|ps[1-5]|nintendo(\s*(switch|wii|ds|3ds))?|wii\s*u?|switch|pal|ntsc|restricted|(ma|r)\s*\d{2}\s*\+?|pg|g|m|dm|oflc|pegi\s*\d*|valve|ea(\s*sports)?|thq|sega|capcom|ubisoft|activision|rockstar(\s*games)?|bethesda|konami|square\s*enix|2k(\s*games|\s*sports)?|warner\s*bros\.?|namco(\s*bandai)?|bandai\s*namco|codemasters|atari|midway|eidos|blu-?ray|dvd|kinect|move|playstation\s*network|xbox\s*live|only\s*on\s*playstation|greatest\s*hits|platinum|classics|essentials|best\s*sellers?|the\s*best|game\s*of\s*the\s*year(\s*edition)?|goty|five\s*games,?\s*one\s*box\.?)[\s\W]*$/i;
+    // Sony disc serials printed on spines: SLES/SCES (PAL PS1/PS2), SLUS/SCUS (US), BLES/BCES/BLUS (PS3),
+    // CUSA/PLAS (PS4), PPSA (PS5), ULES/UCES (PSP), PCSB (Vita) etc. Whole line = serial -> not a title.
+    const SERIAL_LINE_RX = /^[\s\W]*(s[lc][eupak][smjs]|b[lc][eupaj][sm]|np[eu][abz]|cusa|plas|ppsa|u[lc][eu][sm]|pcs[abeg])[\s\W]*([\d\s\/\-]*[a-z]?)[\s\W]*$/i;
     // Taglines and edition fluff to strip from within a line.
     const TAGLINE_RX = /\b(five\s*games,?\s*one\s*box|the\s*real\s*riding\s*simulator|the\s*real\s*driving\s*simulator|only\s*on\s*playstation|greatest\s*hits|platinum|classics|essentials|kinect\s*required|move\s*compatible)\b\.?/gi;
 
@@ -2302,6 +2325,7 @@
         if (!line || line.length < 3) continue;
         if (NOISE_LINE_RX.test(line)) continue;
         if (/^[\W\d]+$/.test(line)) continue; // catalog numbers like "900", "40427", "[PAL)"
+        if (SERIAL_LINE_RX.test(line)) continue; // disc serials like "SLES 52751", "SCES-53669", "CUSA 09264"
 
         // 0. Split letters fused onto a trailing number: "CAUSE2" -> "CAUSE 2", "FIFA20" -> "FIFA 20"
         line = line.replace(/([A-Za-z]{3,})(\d)/g, "$1 $2");
@@ -2325,7 +2349,7 @@
         line = line.replace(/\b\d+\s*[$€£]/g, " ");
 
         // 4. Remove serials/catalog/barcode junk
-        line = line.replace(/\b(bles|cusa|bces|mw2|prod|sku|ean|upc)\s*[-:]?\s*\d+/gi, " ");
+        line = line.replace(/\b(bles|cusa|bces|mw2|prod|sku|ean|upc|sles|sces|slus|scus|blus|bcus|plas|ppsa|ules|uces)\s*[-:]?\s*\d+/gi, " ");
         line = line.replace(/\b(cusa|bles|bces)\b/gi, " ");
 
         // 5. Remove hardware / rating tags
@@ -2339,7 +2363,7 @@
 
         // 7. Clean leading/trailing single character junk
         let words = line.split(" ").filter(Boolean);
-        while (words.length > 1 && (words[0].length <= 2 && !["of", "in", "on", "to", "at", "ii", "iv", "ea", "2k"].includes(words[0].toLowerCase()))) {
+        while (words.length > 1 && (words[0].length <= 2 && !["of", "in", "on", "to", "at", "ii", "iv", "ea", "2k", "go", "no", "up", "my", "we", "oh", "ok", "it", "be", "do", "me", "us", "so", "tv", "vs", "mx", "f1", "nba", "wwe", "fifa"].includes(words[0].toLowerCase()))) {
           words.shift();
         }
         const keepTail = (w) => /^\d{1,2}$/.test(w) || /^(ii|iii|iv|vi|vii|ix|xi|x|v)$/i.test(w) || ["2k", "ea", "hd", "3d", "dx", "gt"].includes(w.toLowerCase());
@@ -2736,7 +2760,8 @@
           params.set("q", q);
           params.set("cat", LOT_MODES[mode].ebayCat);
         }
-        params.set("limit", "40");
+        if (item.exclude) { params.set("exclude", item.exclude); params.set("limit", "50"); }
+        else params.set("limit", "40");
         const res = await fetch(`${EBAY_PROXY_URL}/ebay/search?${params}`);
         if (!res.ok) return null;
         const d = await res.json();
@@ -2886,7 +2911,14 @@
         const ebayResults = await mapLimit(items, 4, async (it, i) => {
           // For text titles, search eBay with the CeX-resolved name when we have a confident one (cleaner than OCR text)
           const q = { ...it };
-          if (!it.gtin && priced[i].found && priced[i].confidence === "high") q.title = priced[i].name.replace(/\s*\((No DLC|\d+)\)\s*/gi, " ").trim();
+          if (!it.gtin && priced[i].found && priced[i].confidence === "high") {
+            const cexName = priced[i].name;
+            // Disc-only CeX items ("Game Only", "No Camera", "No Buzzers"): keep peripheral bundles out of the eBay price
+            if (/game only|no (camera|buzzers?|guitar|drums?|mic|microphones?|instrument|peripheral|controller)/i.test(cexName)) {
+              q.exclude = "bundle,guitar,drum,drums,camera,buzzers,buzzer,microphone,microphones,mics,controller,wireless,instrument,kit";
+            }
+            q.title = cexName.replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+-\s+.*$/, "").replace(/\s+/g, " ").trim();
+          }
           const r = await ebayLookup(q, mode);
           done++; setBusy(`Checking eBay AU prices (${done} / ${items.length})...`);
           return r;

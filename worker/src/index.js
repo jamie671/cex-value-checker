@@ -4,6 +4,7 @@
 //   GET /ebay/search?gtin=9780747532699
 //   GET /ebay/search?q=Inception%20blu-ray&cat=movies
 //   cat = books | movies | music | games | any      limit = 1..50 (default 40)
+//   exclude = comma list of words; listings whose title contains any are dropped (e.g. guitar,bundle)
 //
 // Response: { query, count, returned, low, p25, median, p75, avg, currency, items:[{title,price,shipping,total,condition,url,image}], cached }
 
@@ -54,7 +55,7 @@ function percentile(arr, p) {
   return Math.round(v * 100) / 100;
 }
 
-async function searchEbay(env, { gtin, q, cat, limit }) {
+async function searchEbay(env, { gtin, q, cat, limit, exclude }) {
   const token = await getToken(env);
   const params = new URLSearchParams();
   if (gtin) params.set("gtin", gtin);
@@ -75,7 +76,10 @@ async function searchEbay(env, { gtin, q, cat, limit }) {
   if (!res.ok) throw new Error(`eBay search error ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const data = await res.json();
   const items = [];
+  const excl = (exclude || []).map(w => w.toLowerCase());
   for (const it of (data.itemSummaries || [])) {
+    const t = (it.title || "").toLowerCase();
+    if (excl.length && excl.some(w => t.includes(w))) continue; // e.g. drop guitar/camera bundles for disc-only items
     const price = num(it.price?.value);
     if (price == null) continue;
     const shipOpt = (it.shippingOptions || [])[0] || {};
@@ -100,7 +104,7 @@ async function searchEbay(env, { gtin, q, cat, limit }) {
   const basis = fixed.length >= 3 ? fixed : items;
   const totals = basis.map(i => i.total);
   return {
-    query: gtin ? { gtin } : { q, cat: cat || "any" },
+    query: gtin ? { gtin } : { q, cat: cat || "any", exclude: exclude || [] },
     count: data.total || items.length,
     returned: items.length,
     low: totals.length ? Math.min(...totals) : null,
@@ -127,11 +131,12 @@ export default {
     const q = (url.searchParams.get("q") || "").trim().slice(0, 120);
     const cat = (url.searchParams.get("cat") || "").toLowerCase();
     const limit = Math.min(50, Math.max(1, parseInt(url.searchParams.get("limit") || "40", 10) || 40));
+    const exclude = (url.searchParams.get("exclude") || "").split(",").map(w => w.trim()).filter(w => w.length >= 3).slice(0, 15);
     if (!gtin && q.length < 2) return json({ error: "Provide gtin or q" }, 400, cors);
     if (gtin && !(gtin.length >= 8 && gtin.length <= 14)) return json({ error: "gtin must be 8-14 digits" }, 400, cors);
 
     // Edge cache: same lookup within an hour is free and instant
-    const cacheKey = new Request(`https://cache.local/ebay/search?gtin=${gtin}&q=${encodeURIComponent(q.toLowerCase())}&cat=${cat}&limit=${limit}`);
+    const cacheKey = new Request(`https://cache.local/ebay/search?gtin=${gtin}&q=${encodeURIComponent(q.toLowerCase())}&cat=${cat}&limit=${limit}&ex=${encodeURIComponent(exclude.join(","))}`);
     const cache = caches.default;
     const hit = await cache.match(cacheKey);
     if (hit) {
@@ -139,7 +144,7 @@ export default {
       return json({ ...body, cached: true }, 200, cors);
     }
     try {
-      const result = await searchEbay(env, { gtin, q, cat, limit });
+      const result = await searchEbay(env, { gtin, q, cat, limit, exclude });
       const resp = json({ ...result, cached: false }, 200, { ...cors, "Cache-Control": `public, max-age=${CACHE_TTL}` });
       ctx.waitUntil(cache.put(cacheKey, new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` } })));
       return resp;
