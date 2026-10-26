@@ -10,9 +10,7 @@ This document contains complete project instructions, architecture details, and 
 
 - **Live Web App**: [https://jamie671.github.io/cex-value-checker/](https://jamie671.github.io/cex-value-checker/)
 - **Primary GitHub Repo**: `jamie671/cex-value-checker` (branch: `main`)
-- **Local Workspace Paths**:
-  - Primary: `/Users/jamesgemmell/Library/CloudStorage/GoogleDrive-jamie@searchjam.com.au/My Drive/Antigravty Files/cex-value-checker/`
-  - Mirror: `/Users/jamesgemmell/Library/CloudStorage/GoogleDrive-jamie@searchjam.com.au/My Drive/Antigravty Files/Plato-Intelligence/`
+- Local workspace paths (and any mirror copy) are kept out of this public file.
 
 ---
 
@@ -35,7 +33,7 @@ cex-value-checker/
 ```
 
 > **IMPORTANT**:
-> - Always maintain parity between `cex-value-checker/` and `Plato-Intelligence/`. When making edits, copy the modified files to both directories.
+> - If a mirror copy of this workspace exists locally, keep it in sync after edits.
 > - Never remove `ebay_config.json` from `.gitignore` or commit API secret keys to public git.
 
 ---
@@ -54,13 +52,12 @@ CeX Australia (`au.webuy.com`) uses Algolia for real-time inventory and pricing 
   - Fuzzy tolerance: `removeWordsIfNoResults: "allOptional"`
 
 ### B. Official eBay Production API
-The user has an approved eBay Developers Program Production account used by `EbayClient` in `cex_scraper.py`.
-- **Stored in**: `ebay_config.json` (keys: `app_id`, `cert_id`, `environment: PRODUCTION`, `marketplace_id: EBAY_AU`, `country: AU`)
+`EbayClient` in `cex_scraper.py` uses an eBay Production app (client-credentials OAuth).
+- **Stored in**: `ebay_config.json` (gitignored; never commit it)
 - **Marketplace**: `EBAY_AU` | **Country**: `AU`
 - **OAuth Endpoint**: `https://api.ebay.com/identity/v1/oauth2/token` (grant type: `client_credentials`, scope: `https://api.ebay.com/oauth/api_scope`)
 - **Buy Browse Search Endpoint**: `https://api.ebay.com/buy/browse/v1/item_summary/search`
 - **Categories**: Video Games (`139973`), Movies & TV (`617`), Books (`267`)
-- **Account Deletion Exemption**: Officially approved in Developer Portal (Opted out under "Not persisting eBay data" exemption).
 
 ### C. Google Gemini AI Vision (Optional in Web App)
 - `index.html` supports Gemini for cloud-based AI reading of shelf photos. This is the most reliable way to read a shelf or pile of games in a shop.
@@ -69,15 +66,17 @@ The user has an approved eBay Developers Program Production account used by `Eba
 - Free API keys are created via Google AI Studio (`https://aistudio.google.com/app/apikey`) and saved in the user's browser `localStorage` under `bulk_gemini_key`.
 
 ### D. eBay price proxy (Cloudflare Worker `cex-ebay-proxy`)
-The browser cannot call eBay directly (CORS + secret exposure), so `worker/` is a Cloudflare Worker on Jamie's account (`vultr2@searchjam.com.au`, account `d1198f265e73764b9258bb2f95576eb5`) that holds the eBay credentials as Worker secrets and returns clean price stats.
+The browser cannot call eBay directly (CORS + secret exposure), so `worker/` is a Cloudflare Worker that holds the eBay credentials as Worker secrets and returns clean price stats.
 - **URL**: `https://cex-ebay-proxy.vultr2.workers.dev` (constant `EBAY_PROXY_URL` in `index.html`)
 - **Route**: `GET /ebay/search?gtin=<8-14 digits>` or `GET /ebay/search?q=<text>&cat=books|movies|music|games` (`limit` 1-50, default 40; optional `exclude=word,word` drops listings whose title contains any word). `/health` for a ping.
 - **Response**: `{ count, returned, low, p25, median, p75, avg, currency, items:[{title,price,shipping,shippingKnown,total,condition,buying,url,image}], cached }`. Totals include postage to AU. Stats use fixed-price/best-offer listings when >= 3 exist (auctions distort "low").
 - **Secrets**: `EBAY_APP_ID`, `EBAY_CERT_ID` set with `npx wrangler secret put` from `ebay_config.json`. Never in the repo.
 - **CORS**: allows `https://jamie671.github.io` and `http://localhost:*`.
 - **Cache**: edge-cached 1h per (gtin|q, cat, limit). eBay allows ~5,000 Browse calls/day.
-- **Limits**: Browse API = *active* listings only. eBay's sold-price API (Marketplace Insights) needs separate approval Jamie does not have. eBay category IDs: Books 267, Movies & TV 11232, Music 11233, Video Games 139973.
-- **Deploy**: `cd worker && npx wrangler deploy` (Wrangler is installed and logged in on Jamie's Mac).
+- **Rate limit**: uncached lookups are capped at 30/min per IP (IPv6 by /64) via the `SEARCH_LIMIT` ratelimit binding in `wrangler.jsonc`; the Worker returns 503 if the binding is missing and 429 + `Retry-After` when over. `ebayLookup` in `index.html` waits and retries on 429.
+- **Errors**: callers get generic messages ("eBay lookup failed", "Service unavailable"); upstream detail goes to `console.error` (Workers observability logs).
+- **Limits**: Browse API = *active* listings only. eBay's sold-price API (Marketplace Insights) needs separate approval and is not used. eBay category IDs: Books 267, Movies & TV 11232, Music 11233, Video Games 139973.
+- **Deploy**: `cd worker && npx wrangler deploy` (logged in to the Cloudflare account that owns the Worker).
 
 ---
 
@@ -164,17 +163,11 @@ git push origin main
 # GitHub Pages auto-builds in ~30 seconds at https://jamie671.github.io/cex-value-checker/
 ```
 
-### Sync Workspaces
-```bash
-# Copy modified files between primary and mirror workspace:
-cp index.html cex_scraper.py CLAUDE.md "/Users/jamesgemmell/Library/CloudStorage/GoogleDrive-jamie@searchjam.com.au/My Drive/Antigravty Files/Plato-Intelligence/"
-```
-
 ---
 
 ## 6. Guidelines for Claude
 
 1. **Do not leak API credentials**: Never put private client secrets or `ebay_config.json` contents in public commits.
 2. **Preserve PWA functionality**: When modifying `index.html`, ensure all scripts work offline/client-side and maintain mobile responsiveness.
-3. **Keep workspaces synchronized**: Always reflect changes in both `cex-value-checker` and `Plato-Intelligence`.
+3. **Keep any local mirror in sync** after edits.
 4. **Algolia parameter consistency**: Keep `filters: "boxVisibilityOnWeb=1 AND boxBuyAllowed=1 AND superCatFriendlyName:Gaming"` and `removeWordsIfNoResults: "allOptional"` for robust game title matching.

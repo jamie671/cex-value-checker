@@ -16,12 +16,25 @@ const CACHE_TTL = 3600;
 
 let tokenCache = { token: null, expiry: 0 };
 
+// Rate-limit key: IPv4 as is, IPv6 by its /64 (with '::' expanded first, so "2001:db8::1" and "2001:db8::2" match).
+function ipKey(ip) {
+  if (!ip.includes(":")) return ip;
+  const v4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  if (v4) return v4[1];
+  const [head, tail] = ip.toLowerCase().split("::");
+  const a = head ? head.split(":") : [];
+  const b = tail === undefined ? [] : tail ? tail.split(":") : [];
+  const groups = tail === undefined ? a : [...a, ...Array(Math.max(0, 8 - a.length - b.length)).fill("0"), ...b];
+  return `${groups.slice(0, 4).map(g => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
+
 function corsHeaders(origin) {
   const ok = origin && ALLOWED_ORIGINS.some(rx => rx.test(origin));
   return {
     "Access-Control-Allow-Origin": ok ? origin : "https://jamie671.github.io",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Expose-Headers": "Retry-After",
     "Vary": "Origin"
   };
 }
@@ -38,7 +51,7 @@ async function getToken(env) {
     headers: { "Content-Type": "application/x-www-form-urlencoded", "Authorization": `Basic ${basic}` },
     body: "grant_type=client_credentials&scope=" + encodeURIComponent("https://api.ebay.com/oauth/api_scope")
   });
-  if (!res.ok) throw new Error(`eBay token error ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) throw new Error(`eBay token error ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const d = await res.json();
   tokenCache = { token: d.access_token, expiry: Date.now() + (d.expires_in || 7200) * 1000 };
   return tokenCache.token;
@@ -125,7 +138,16 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/" || url.pathname === "/health") return json({ ok: true, service: "cex-ebay-proxy" }, 200, cors);
     if (url.pathname !== "/ebay/search") return json({ error: "Not found" }, 404, cors);
-    if (!env.EBAY_APP_ID || !env.EBAY_CERT_ID) return json({ error: "Worker missing eBay secrets" }, 500, cors);
+    if (!env.EBAY_APP_ID || !env.EBAY_CERT_ID) {
+      console.error("EBAY_APP_ID / EBAY_CERT_ID secrets are not set");
+      return json({ error: "Service unavailable" }, 503, cors);
+    }
+    // Per-IP cap on eBay lookups (SEARCH_LIMIT ratelimit binding in wrangler.jsonc). It protects the eBay app's
+    // daily Browse API quota, so a missing binding is a setup mistake: refuse rather than run uncapped.
+    if (!env.SEARCH_LIMIT) {
+      console.error("SEARCH_LIMIT rate-limit binding is missing");
+      return json({ error: "Service unavailable" }, 503, cors);
+    }
 
     const gtin = (url.searchParams.get("gtin") || "").replace(/\D/g, "");
     const q = (url.searchParams.get("q") || "").trim().slice(0, 120);
@@ -143,13 +165,18 @@ export default {
       const body = await hit.json();
       return json({ ...body, cached: true }, 200, cors);
     }
+    // Only uncached lookups (the ones that call eBay) count against the limit.
+    const { success } = await env.SEARCH_LIMIT.limit({ key: ipKey(request.headers.get("CF-Connecting-IP") || "unknown") });
+    if (!success) return json({ error: "Too many requests" }, 429, { ...cors, "Retry-After": "15" });
     try {
       const result = await searchEbay(env, { gtin, q, cat, limit, exclude });
       const resp = json({ ...result, cached: false }, 200, { ...cors, "Cache-Control": `public, max-age=${CACHE_TTL}` });
       ctx.waitUntil(cache.put(cacheKey, new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` } })));
       return resp;
     } catch (err) {
-      return json({ error: String(err.message || err) }, 502, cors);
+      // Upstream detail stays in the Worker logs; callers get a generic message.
+      console.error("eBay lookup failed:", err && err.message ? err.message : err);
+      return json({ error: "eBay lookup failed" }, 502, cors);
     }
   }
 };

@@ -3,6 +3,11 @@
   "name": "cex-ebay-proxy",
   "main": "src/index.js",
   "compatibility_date": "2026-09-01",
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // Per-IP cap on uncached /ebay/search lookups (read as env.SEARCH_LIMIT; the Worker refuses to run without it).
+  // namespace_id is unique per rate limiter in the account.
+  "ratelimits": [
+    { "name": "SEARCH_LIMIT", "namespace_id": "2610264", "simple": { "limit": 30, "period": 60 } }
+  ]
   // Secrets (set with `npx wrangler secret put`): EBAY_APP_ID, EBAY_CERT_ID
 }
