@@ -3,7 +3,8 @@
 //
 //   GET /ebay/search?gtin=9780747532699
 //   GET /ebay/search?q=Inception%20blu-ray&cat=movies
-//   cat = books | movies | music | games | any      limit = 1..50 (default 40)
+//   cat = books | movies | music | games | boardgames | any      limit = 1..50 (default 40)
+//   sort = price (default, cheapest first) | match (eBay best match)
 //   exclude = comma list of words; listings whose title contains any are dropped (e.g. guitar,bundle)
 //
 // Response: { query, basis: "au_used"|"all", localCount?, count, returned, low, p25, median, p75, avg, currency,
@@ -12,7 +13,8 @@
 
 const MARKETPLACE = "EBAY_AU";
 const COUNTRY = "AU";
-const CATEGORY_IDS = { books: "267", movies: "11232", music: "11233", games: "139973" };
+// boardgames = eBay "Games" (233): covers contemporary (180349) and vintage (19100) board games
+const CATEGORY_IDS = { books: "267", movies: "11232", music: "11233", games: "139973", boardgames: "233" };
 const ALLOWED_ORIGINS = [/^https:\/\/jamie671\.github\.io$/, /^http:\/\/localhost(:\d+)?$/, /^http:\/\/127\.0\.0\.1(:\d+)?$/];
 const CACHE_TTL = 3600;
 
@@ -82,7 +84,7 @@ async function searchEbay(env, args) {
   return { ...all, basis: "all", localCount: local.returned };
 }
 
-async function searchEbayOnce(env, { gtin, q, cat, limit, exclude, localUsed }) {
+async function searchEbayOnce(env, { gtin, q, cat, limit, exclude, localUsed, sort }) {
   const token = await getToken(env);
   const params = new URLSearchParams();
   if (gtin) params.set("gtin", gtin);
@@ -91,7 +93,9 @@ async function searchEbayOnce(env, { gtin, q, cat, limit, exclude, localUsed }) 
   const filters = [`deliveryCountry:${COUNTRY}`, "buyingOptions:{FIXED_PRICE|BEST_OFFER|AUCTION}"];
   if (localUsed) filters.push(`itemLocationCountry:${COUNTRY}`, "conditions:{USED}");
   params.set("filter", filters.join(","));
-  params.set("sort", "price");
+  // sort "price" (default) = cheapest first; "match" = eBay's best match, which keeps loose parts and
+  // single cards (the cheapest board game listings) from dominating the sample
+  if (sort !== "match") params.set("sort", "price");
   params.set("limit", String(limit));
   const url = `https://api.ebay.com/buy/browse/v1/item_summary/search?${params}`;
   const res = await fetch(url, {
@@ -170,12 +174,13 @@ export default {
     const q = (url.searchParams.get("q") || "").trim().slice(0, 120);
     const cat = (url.searchParams.get("cat") || "").toLowerCase();
     const limit = Math.min(50, Math.max(1, parseInt(url.searchParams.get("limit") || "40", 10) || 40));
-    const exclude = (url.searchParams.get("exclude") || "").split(",").map(w => w.trim()).filter(w => w.length >= 3).slice(0, 15);
+    const sort = url.searchParams.get("sort") === "match" ? "match" : "price";
+    const exclude = (url.searchParams.get("exclude") || "").split(",").map(w => w.trim()).filter(w => w.length >= 3).slice(0, 40);
     if (!gtin && q.length < 2) return json({ error: "Provide gtin or q" }, 400, cors);
     if (gtin && !(gtin.length >= 8 && gtin.length <= 14)) return json({ error: "gtin must be 8-14 digits" }, 400, cors);
 
     // Edge cache: same lookup within an hour is free and instant
-    const cacheKey = new Request(`https://cache.local/v3/ebay/search?gtin=${gtin}&q=${encodeURIComponent(q.toLowerCase())}&cat=${cat}&limit=${limit}&ex=${encodeURIComponent(exclude.join(","))}`);
+    const cacheKey = new Request(`https://cache.local/v3/ebay/search?gtin=${gtin}&q=${encodeURIComponent(q.toLowerCase())}&cat=${cat}&limit=${limit}&ex=${encodeURIComponent(exclude.join(","))}&sort=${sort}`);
     const cache = caches.default;
     const hit = await cache.match(cacheKey);
     if (hit) {
@@ -186,7 +191,7 @@ export default {
     const { success } = await env.SEARCH_LIMIT.limit({ key: ipKey(request.headers.get("CF-Connecting-IP") || "unknown") });
     if (!success) return json({ error: "Too many requests" }, 429, { ...cors, "Retry-After": "15" });
     try {
-      const result = await searchEbay(env, { gtin, q, cat, limit, exclude });
+      const result = await searchEbay(env, { gtin, q, cat, limit, exclude, sort });
       const resp = json({ ...result, cached: false }, 200, { ...cors, "Cache-Control": `public, max-age=${CACHE_TTL}` });
       ctx.waitUntil(cache.put(cacheKey, new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` } })));
       return resp;

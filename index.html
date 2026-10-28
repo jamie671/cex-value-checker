@@ -1571,11 +1571,12 @@
         </div>
         <div id="lotSetupWrap" class="space-y-3">
         <!-- What are we pricing? -->
-        <div class="grid grid-cols-4 gap-1 bg-slate-950/80 border border-slate-800 rounded-xl p-1 text-[11px]" id="lotModeBar">
+        <div class="grid grid-cols-5 gap-1 bg-slate-950/80 border border-slate-800 rounded-xl p-1 text-[10px]" id="lotModeBar">
           <button type="button" onclick="setLotMode('games')" data-mode="games" class="py-1.5 rounded-lg font-bold transition">🎮 Games</button>
           <button type="button" onclick="setLotMode('movies')" data-mode="movies" class="py-1.5 rounded-lg font-bold transition">🎬 Movies</button>
           <button type="button" onclick="setLotMode('books')" data-mode="books" class="py-1.5 rounded-lg font-bold transition">📚 Books</button>
           <button type="button" onclick="setLotMode('music')" data-mode="music" class="py-1.5 rounded-lg font-bold transition">💿 Music</button>
+          <button type="button" onclick="setLotMode('boardgames')" data-mode="boardgames" class="py-1.5 rounded-lg font-bold transition">🎲 Board</button>
         </div>
         <!-- Local Spine Scanner Action Bar (Option 2) -->
         <!-- Spine Scanner Engine Selector & Action Bar -->
@@ -2265,7 +2266,11 @@
 
     const PREFIX_LINE_RX = /^(tom\s*clancy['’]?s?|(walt\s*)?disney['’]?s?|sid\s*meier['’]?s?|cabela['’]?s|james\s*cameron['’]?s|clive\s*barker['’]?s|american\s*mcgee['’]?s|marvel|lego|dreamworks|pixar)$/i;
     // Parse a raw dump (Live Text, OCR, or hand-typed) into [{ title, platform, category }].
+    // Box-side text on board games that is never the title: player counts, ages, play time, publishers, taglines
+    const BOARDGAME_NOISE_LINE_RX = /^[\s\W]*((\d+\s*[-–to]+\s*)?\d+\s*\+?\s*(players?|spelers|joueurs)|ages?\s*\d+\s*\+?|\d+\s*\+|\d+\s*[-–]?\s*\d*\s*(min|mins|minutes)|hasbro(\s*gaming)?|parker(\s*brothers)?|milton\s*bradley|mb(\s*games)?|mattel|ravensburger|spin\s*master|asmodee|z-?man(\s*games)?|days\s*of\s*wonder|kosmos|cmon|fantasy\s*flight(\s*games)?|wizards\s*of\s*the\s*coast|university\s*games|goliath|crown\s*(&|and)\s*andrews|drumond\s*park|cardinal|winning\s*moves|catan\s*studio|stonemaier(\s*games)?|repos(\s*production)?|board\s*game|family\s*game|strategy\s*game|party\s*game|card\s*game|the\s*classic\s*game|contents?|made\s*in\s*\w+)[\s\W]*$/i;
+
     function parseSpineDump(rawText) {
+      const boardGames = (lotState.mode || "") === "boardgames";
       const items = [];
       let currentPlatform = null;
       let pendingPrefix = "";
@@ -2283,6 +2288,14 @@
             items.push({ title: digits, gtin: digits, platform: currentPlatform ? currentPlatform.label : "", category: currentPlatform ? currentPlatform.category : "" });
             continue;
           }
+        }
+        if (boardGames) {
+          // No platforms for board games; just drop box-side noise and keep the title
+          const bgLine = line.split("|")[0].replace(/[™®©]/g, "").trim();
+          if (!bgLine || BOARDGAME_NOISE_LINE_RX.test(bgLine)) continue;
+          const bgClean = cleanAndFilterTitles(bgLine.replace(/\b(the\s+)?(board|family|strategy|party)\s+game\b/gi, " "));
+          if (bgClean.length) items.push({ title: bgClean[0], platform: "", category: "" });
+          continue;
         }
         // Already tidied: "Title | Platform"
         let explicit = null;
@@ -2762,25 +2775,36 @@
       games:  { label: "Games",  ebayCat: "games",  cex: "catalog", hint: "Photo of spines, Live Text paste, or scan barcodes." },
       movies: { label: "Movies", ebayCat: "movies", cex: "film",    hint: "CeX buys Blu-rays; DVDs are priced on eBay only." },
       books:  { label: "Books",  ebayCat: "books",  cex: null,      hint: "Scan the ISBN barcode on the back cover for exact matches." },
-      music:  { label: "Music",  ebayCat: "music",  cex: null,      hint: "Scan the barcode on the back of the CD case." }
+      music:  { label: "Music",  ebayCat: "music",  cex: null,      hint: "Scan the barcode on the back of the CD case." },
+      boardgames: { label: "Board games", ebayCat: "boardgames", cex: null, hint: "Scan the barcode on the box bottom. Always check a game is complete before buying." }
     };
     lotState.mode = localStorage.getItem("lot_mode") || "games";
     lotState.settings = { itemCost: 2, postage: 4 };
     try { Object.assign(lotState.settings, JSON.parse(localStorage.getItem("lot_settings") || "{}")); } catch (e) {}
 
+    // Postage is remembered per mode: a boxed board game costs far more to send than a disc or CD
+    const DEFAULT_POSTAGE = { games: null, movies: null, books: null, music: null, boardgames: 12 };
+    function postageFor(mode) {
+      const by = lotState.settings.postageByMode || {};
+      if (by[mode] != null) return by[mode];
+      return DEFAULT_POSTAGE[mode] ?? lotState.settings.postage;
+    }
     function saveLotSettings() {
       lotState.settings.itemCost = parseFloat(document.getElementById("lotItemCost")?.value || 0) || 0;
-      lotState.settings.postage = parseFloat(document.getElementById("lotPostage")?.value || 0) || 0;
+      const po = parseFloat(document.getElementById("lotPostage")?.value || 0) || 0;
+      lotState.settings.postageByMode = { ...(lotState.settings.postageByMode || {}), [lotState.mode || "games"]: po };
       try { localStorage.setItem("lot_settings", JSON.stringify(lotState.settings)); } catch (e) {}
     }
     function loadLotSettingsUI() {
       const c = document.getElementById("lotItemCost"), po = document.getElementById("lotPostage");
       if (c) c.value = lotState.settings.itemCost;
-      if (po) po.value = lotState.settings.postage;
+      if (po) po.value = postageFor(lotState.mode || "games");
     }
     function setLotMode(mode) {
       if (!LOT_MODES[mode]) mode = "games";
       lotState.mode = mode;
+      const poInput = document.getElementById("lotPostage");
+      if (poInput) poInput.value = postageFor(mode);
       localStorage.setItem("lot_mode", mode);
       document.querySelectorAll("#lotModeBar button").forEach(b => {
         const on = b.dataset.mode === mode;
@@ -2791,7 +2815,7 @@
       const st = document.getElementById("lotTidyStatus");
       if (st && !lotState.items.length) { st.innerText = LOT_MODES[mode].hint; st.className = "text-[10px] text-slate-500 mt-1"; }
       const ta = document.getElementById("lotTextarea");
-      if (ta) ta.placeholder = mode === "games" ? "Spider-Man PS4\nThe Orange Box Xbox 360\n5026555284158" : mode === "movies" ? "Inception Blu-ray\nThe Dark Knight DVD\n9398711234567" : mode === "books" ? "9780747532699\nSapiens Yuval Noah Harari" : "Fleetwood Mac Rumours\n0093624979357";
+      if (ta) ta.placeholder = mode === "games" ? "Spider-Man PS4\nThe Orange Box Xbox 360\n5026555284158" : mode === "movies" ? "Inception Blu-ray\nThe Dark Knight DVD\n9398711234567" : mode === "books" ? "9780747532699\nSapiens Yuval Noah Harari" : mode === "boardgames" ? "029877030712\nTicket to Ride\nHungry Hungry Hippos" : "Fleetwood Mac Rumours\n0093624979357";
     }
 
     // Look up one item on eBay AU via the Worker. Returns null on failure.
@@ -2803,10 +2827,13 @@
           let q = item.title;
           if (mode === "movies" && item.platform && !new RegExp(item.platform.split(" ")[0], "i").test(q)) q += " " + item.platform;
           if (mode === "games" && item.platform && !new RegExp(item.platform, "i").test(q)) q += " " + item.platform;
+          // Board games: "board game" keeps out apps (Monopoly GO), guides and video game versions
+          if (mode === "boardgames" && !/\bgame\b/i.test(q)) q += " board game";
           params.set("q", q);
           params.set("cat", LOT_MODES[mode].ebayCat);
         }
         if (item.exclude) { params.set("exclude", item.exclude); params.set("limit", "50"); }
+        if (mode === "boardgames") params.set("sort", "match");
         else params.set("limit", "40");
         params.set("v", "3");
         let res = await fetch(`${EBAY_PROXY_URL}/ebay/search?${params}`);
@@ -2836,8 +2863,42 @@
         .replace(/\s+/g, " ").trim();
     }
     const DISC_ONLY_EXCLUDE = "bundle,guitar,drum,drums,camera,buzzers,buzzer,microphone,microphones,mics,controller,wireless,instrument,kit";
+    // Cheap board game listings are often parts, single pieces or expansions; exclude them unless the item itself is one
+    const BOARDGAME_EXCLUDE = [
+      // phrases, not single words: whole-game listings often say "nothing missing", "all parts", "rules included"
+      "replacement", "spare part", "parts only", "pieces only", "piece only", "cards only", "card only", "box only", "empty box",
+      "insert only", "sleeves", "promo", "expansion", "incomplete", "rules only", "instructions only", "almanac", "game guide",
+      "strategy guide", "lot of", "single card", "token only", "tokens only", "dice only", "board only", "money only",
+      // the Monopoly GO mobile game sells "partners events" and stickers in the same category
+      "monopoly go", "monopoly_go", "partners event", "sticker", "dice rolls", "digital"]
+    // Name a board game from its barcode listings: keep words most listing titles share, minus publishers and filler
+    const BG_TITLE_STOP = new Set(["board", "game", "games", "new", "sealed", "brand", "complete", "family", "strategy", "party", "players", "player", "ages", "age", "years", "vintage", "rare", "used", "excellent", "condition", "good", "great", "very", "free", "post", "postage", "shipping", "fast", "aus", "australia", "australian", "edition", "version", "classic", "hasbro", "gaming", "parker", "brothers", "milton", "bradley", "mattel", "ravensburger", "asmodee", "wonder", "kosmos", "spin", "master", "goliath", "cardinal", "winning", "moves", "with", "and", "the", "for", "kids", "adults", "box", "boxed", "english", "nib", "bnib", "mint"]);
+    function consensusTitle(listings) {
+      const titles = (listings || []).slice(0, 15).map(l => matchNorm(l.title).split(" ").filter(Boolean));
+      if (!titles.length) return "";
+      const freq = new Map();
+      for (const t of titles) for (const w of new Set(t)) freq.set(w, (freq.get(w) || 0) + 1);
+      // A word must appear in most listings (designer names, "train", subtitles drop out); relax if that leaves nothing
+      const ok = (w, th) => (freq.get(w) || 0) / titles.length >= th && !BG_TITLE_STOP.has(w) && !/^(19|20)\d\d$/.test(w) && (w.length > 1 || /^\d$/.test(w));
+      // Keep only words almost as common as the most common eligible word (the game's name is in nearly every
+      // listing; publisher, designer and subtitle words appear in fewer)
+      let top = 0;
+      for (const [w, n] of freq) if (ok(w, 0)) top = Math.max(top, n / titles.length);
+      const th = Math.max(0.5, top * 0.9);
+      const keep = (w) => ok(w, th);
+      // Order words as they appear in the listing that contains the most kept words
+      const best = titles.slice().sort((a, b) => b.filter(keep).length - a.filter(keep).length)[0];
+      const words = [...new Set(best.filter(keep))];
+      return words.map(w => w.length > 2 ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
+    }
+
     function buildEbayQuery(it, pricedItem) {
       const q = { ...it };
+      if ((lotState.mode || "") === "boardgames") {
+        const t = (it.title || "").toLowerCase();
+        q.exclude = BOARDGAME_EXCLUDE.filter(w => it.gtin || !t.includes(w)).join(",");
+        return q;
+      }
       if (!it.gtin && pricedItem && pricedItem.found) {
         if (/game only|no (camera|buzzers?|guitar|drums?|mic|microphones?|instrument|peripheral|controller)/i.test(pricedItem.name)) q.exclude = DISC_ONLY_EXCLUDE;
         q.title = ebayQueryName(pricedItem.name) || it.title;
@@ -2866,7 +2927,7 @@
     }
     function attachEbay(pricedItem, e, queryTitle) {
       if (!e) { pricedItem.ebay = null; return; }
-      const r = pricedItem.gtin ? { ...e, relevant: (e.items || []).length, listings: e.items || [] } : relevantEbay(e, queryTitle);
+      const r = (pricedItem.gtin && !pricedItem.gtinViaTitle) ? { ...e, relevant: (e.items || []).length, listings: e.items || [] } : relevantEbay(e, queryTitle);
       const top = r.listings[0] || null;
       pricedItem.ebay = { low: r.low, p25: r.p25, median: r.median, count: e.count, returned: r.listings.length, relevant: r.relevant, top, url: top?.url || null, query: queryTitle, basis: e.basis || "" };
     }
@@ -2878,10 +2939,11 @@
 
     // Profit maths for one priced item; fills item.sell, item.ebayNet, item.cexNet, item.verdict, item.route
     function computeVerdict(item) {
-      const { itemCost, postage } = lotState.settings;
+      const itemCost = lotState.settings.itemCost, postage = postageFor(lotState.mode || "games");
       const e = item.ebay;
       let sell = null;
-      if (e && e.returned > 0) sell = item.gtin ? (e.low ?? e.p25 ?? e.median) : (e.p25 ?? e.median ?? e.low);
+      const exactGtin = item.gtin && !item.gtinViaTitle;
+      if (e && e.returned > 0) sell = exactGtin ? (e.low ?? e.p25 ?? e.median) : (e.p25 ?? e.median ?? e.low);
       // CeX's own shelf price is a good ceiling: eBay far above it usually means bundles or special editions
       item.ebayCapped = false;
       if (sell != null && item.found && item.sell > 0 && sell > Math.max(item.sell * 2, item.sell + 15)) { sell = item.sell; item.ebayCapped = true; }
@@ -2898,7 +2960,7 @@
       else if (item.bestNet >= 0) item.verdict = "marginal";
       else item.verdict = "leave";
       // Thin evidence can't make a BUY: fewer than 5 matching eBay listings (text search) with no CeX route
-      item.thin = !item.gtin && item.route === "ebay" && e && e.returned > 0 && e.returned < 5;
+      item.thin = !exactGtin && item.route === "ebay" && e && e.returned > 0 && e.returned < 5;
       if (item.verdict === "buy" && item.thin) item.verdict = "marginal";
       // Games/Movies: a line CeX couldn't identify is usually misread text, so its eBay-only price needs confirming
       const cexMode = !!(LOT_MODES[lotState.mode || "games"] || {}).cex;
@@ -3028,7 +3090,16 @@
           // Search eBay with the matched CeX name (cleaner than OCR text); keep bundles out for disc-only items
           const q = buildEbayQuery(it, priced[i]);
           queryTitles[i] = q.title;
-          const r = await ebayLookup(q, mode);
+          let r = await ebayLookup(q, mode);
+          // Board games: used sellers rarely enter barcodes, so a barcode search mostly finds new copies.
+          // Use it only to name the game, then price that name against used listings like a typed title.
+          if (mode === "boardgames" && it.gtin && r && r.items && r.items.length) {
+            const name = consensusTitle(r.items);
+            if (name && keyTokens(name).length) {
+              const r2 = await ebayLookup(buildEbayQuery({ title: name, platform: "", category: "" }, null), mode);
+              if (r2) { r = r2; queryTitles[i] = name; priced[i].name = name; priced[i].gtinViaTitle = true; priced[i].ebayTitled = true; }
+            }
+          }
           done++; setBusy(`Checking eBay AU prices (${done} / ${items.length})...`);
           return r;
         });
@@ -3036,7 +3107,7 @@
           const e = ebayResults[i];
           attachEbay(priced[i], e, queryTitles[i] || it.title);
           // Barcode items with no CeX name: take the title from the eBay listing
-          if (!priced[i].found && it.gtin && e && e.items && e.items[0]) {
+          if (!priced[i].found && it.gtin && !priced[i].gtinViaTitle && e && e.items && e.items[0]) {
             priced[i].name = e.items[0].title.replace(/\s+/g, " ").slice(0, 90);
             priced[i].ebayTitled = true;
           }
@@ -3171,7 +3242,7 @@
       const ebayLine = (item) => {
         const e = item.ebay;
         if (!e || !e.returned) return `<div class="text-[11px] text-slate-500 mt-1">eBay AU: ${e && e.count ? "no listings actually matching this title" : "no current listings found"}${item.gtin ? " for this barcode" : ""}</div>`;
-        const basis = item.gtin ? "lowest" : "typical low";
+        const basis = (item.gtin && !item.gtinViaTitle) ? "lowest" : "typical low";
         const net = item.ebayNet;
         return `<div class="flex items-baseline gap-2 mt-1 text-[11px] flex-wrap">
           <a href="${safeUrl(e.url)}" target="_blank" rel="noopener" class="text-blue-300 hover:underline font-bold">eBay</a>
@@ -3221,11 +3292,11 @@
         const status = state === "none" ? chip("Not found", "bg-rose-950/60 text-rose-300 border border-rose-800/40")
                      : state === "check" ? chip("Check match", "bg-amber-500/15 text-amber-300 border border-amber-700/40")
                      : (item.confirmed ? chip("✓ Confirmed", "bg-emerald-950/50 text-emerald-300 border border-emerald-800/40") : "");
-        const readAs = item.rawTitle && !item.gtin && matchNorm(item.rawTitle) !== matchNorm(item.name) ? `<div class="text-[10px] text-slate-500 truncate">read as "${escapeHtml(item.rawTitle)}"</div>` : (item.gtin ? `<div class="text-[10px] text-slate-500">barcode ${item.gtin}${item.ebayTitled ? " · title from eBay listing" : ""}</div>` : "");
+        const readAs = item.rawTitle && !item.gtin && matchNorm(item.rawTitle) !== matchNorm(item.name) ? `<div class="text-[10px] text-slate-500 truncate">read as "${escapeHtml(item.rawTitle)}"</div>` : (item.gtin ? `<div class="text-[10px] text-slate-500">barcode ${item.gtin}${item.gtinViaTitle ? " · identified from eBay, priced on used copies" : (item.ebayTitled ? " · title from eBay listing" : "")}</div>` : "");
         const titleHtml = item.found
           ? `<a href="${safeUrl(item.url)}" target="_blank" rel="noopener" class="text-[13px] font-bold text-white hover:text-blue-300 hover:underline leading-tight">${escapeHtml(item.name)}</a>`
           : `<span class="text-[13px] font-bold ${hasAnyData ? "text-white" : "text-rose-200"} leading-tight">${escapeHtml(item.name)}</span>`;
-        const route = item.verdict === "buy" || item.verdict === "marginal" ? `<div class="text-[10px] text-slate-400 mt-1">Best route: <span class="text-white font-bold">${item.route === "cex" ? "sell to CeX for cash" : "list on eBay"}</span></div>` : "";
+        const route = item.verdict === "buy" || item.verdict === "marginal" ? `<div class="text-[10px] text-slate-400 mt-1">Best route: <span class="text-white font-bold">${item.route === "cex" ? "sell to CeX for cash" : "list on eBay"}</span></div>${mode === "boardgames" ? `<div class="text-[10px] text-amber-300 mt-0.5">🧩 Check it's complete first: count pieces and cards against the rules. A game with parts missing usually sells for a fraction of this.</div>` : ""}` : "";
         return `
           <div class="bg-slate-950/70 border ${border} rounded-xl p-3">
             <div class="flex items-start gap-2">
@@ -3244,7 +3315,7 @@
       }).join("");
 
       const leaveCount = items.filter(i => i.verdict === "leave").length;
-      const summary = items.length ? `<div class="text-[10px] text-slate-400 text-center px-2">${buyCount ? `<span class="text-emerald-300 font-bold">${buyCount}</span> to buy` : "nothing clearly worth buying"}${leaveCount ? ` · ${leaveCount} to leave` : ""}${checkCount ? ` · <span class="text-amber-300 font-bold">${checkCount}</span> to check` : ""}${missCount ? ` · <span class="text-rose-300 font-bold">${missCount}</span> not found` : ""} · at $${lotState.settings.itemCost} each, $${lotState.settings.postage} postage</div>` : "";
+      const summary = items.length ? `<div class="text-[10px] text-slate-400 text-center px-2">${buyCount ? `<span class="text-emerald-300 font-bold">${buyCount}</span> to buy` : "nothing clearly worth buying"}${leaveCount ? ` · ${leaveCount} to leave` : ""}${checkCount ? ` · <span class="text-amber-300 font-bold">${checkCount}</span> to check` : ""}${missCount ? ` · <span class="text-rose-300 font-bold">${missCount}</span> not found` : ""} · at $${lotState.settings.itemCost} each, $${postageFor(mode)} postage</div>` : "";
       document.getElementById("lotTableBody").innerHTML = summary + cards;
       lucide.createIcons();
     }
