@@ -6,7 +6,9 @@
 //   cat = books | movies | music | games | any      limit = 1..50 (default 40)
 //   exclude = comma list of words; listings whose title contains any are dropped (e.g. guitar,bundle)
 //
-// Response: { query, count, returned, low, p25, median, p75, avg, currency, items:[{title,price,shipping,total,condition,url,image}], cached }
+// Response: { query, basis: "au_used"|"all", localCount?, count, returned, low, p25, median, p75, avg, currency,
+//             items:[{title,price,shipping,total,condition,location,url,image}], cached }
+// basis "au_used" = Australian-located used listings (preferred); "all" = fallback to everything delivered to AU.
 
 const MARKETPLACE = "EBAY_AU";
 const COUNTRY = "AU";
@@ -68,13 +70,27 @@ function percentile(arr, p) {
   return Math.round(v * 100) / 100;
 }
 
-async function searchEbay(env, { gtin, q, cat, limit, exclude }) {
+// Minimum listings before we trust the "Australian sellers, used condition" pool on its own
+const MIN_LOCAL = 5;
+
+async function searchEbay(env, args) {
+  // 1st choice: listings located in Australia, used condition. Overseas sellers add postage to AU and
+  // new/sealed copies sit higher, both of which inflate what a charity-shop find will actually fetch.
+  const local = await searchEbayOnce(env, { ...args, localUsed: true });
+  if (local.returned >= MIN_LOCAL) return { ...local, basis: "au_used" };
+  const all = await searchEbayOnce(env, { ...args, localUsed: false });
+  return { ...all, basis: "all", localCount: local.returned };
+}
+
+async function searchEbayOnce(env, { gtin, q, cat, limit, exclude, localUsed }) {
   const token = await getToken(env);
   const params = new URLSearchParams();
   if (gtin) params.set("gtin", gtin);
   else params.set("q", q);
   if (cat && CATEGORY_IDS[cat]) params.set("category_ids", CATEGORY_IDS[cat]);
-  params.set("filter", `deliveryCountry:${COUNTRY},buyingOptions:{FIXED_PRICE|BEST_OFFER|AUCTION}`);
+  const filters = [`deliveryCountry:${COUNTRY}`, "buyingOptions:{FIXED_PRICE|BEST_OFFER|AUCTION}"];
+  if (localUsed) filters.push(`itemLocationCountry:${COUNTRY}`, "conditions:{USED}");
+  params.set("filter", filters.join(","));
   params.set("sort", "price");
   params.set("limit", String(limit));
   const url = `https://api.ebay.com/buy/browse/v1/item_summary/search?${params}`;
@@ -106,6 +122,7 @@ async function searchEbay(env, { gtin, q, cat, limit, exclude }) {
       shippingKnown,
       total: Math.round((price + shipping) * 100) / 100,
       condition: it.condition || "",
+      location: it.itemLocation?.country || "",
       buying: (it.buyingOptions || []).join("|"),
       url: it.itemWebUrl,
       image: it.image?.imageUrl || it.thumbnailImages?.[0]?.imageUrl || null,
@@ -158,7 +175,7 @@ export default {
     if (gtin && !(gtin.length >= 8 && gtin.length <= 14)) return json({ error: "gtin must be 8-14 digits" }, 400, cors);
 
     // Edge cache: same lookup within an hour is free and instant
-    const cacheKey = new Request(`https://cache.local/v2/ebay/search?gtin=${gtin}&q=${encodeURIComponent(q.toLowerCase())}&cat=${cat}&limit=${limit}&ex=${encodeURIComponent(exclude.join(","))}`);
+    const cacheKey = new Request(`https://cache.local/v3/ebay/search?gtin=${gtin}&q=${encodeURIComponent(q.toLowerCase())}&cat=${cat}&limit=${limit}&ex=${encodeURIComponent(exclude.join(","))}`);
     const cache = caches.default;
     const hit = await cache.match(cacheKey);
     if (hit) {

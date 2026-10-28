@@ -507,8 +507,9 @@ class EbayClient:
         clean = re.sub(r"\b(G|PG|M|MA15\+|R18\+|E|T|AO)\b", "", clean, flags=re.IGNORECASE)
         clean = re.sub(r"\*+DNU\*+|\(DNU\)", "", clean, flags=re.IGNORECASE)
         # 3. Clean parenthetical descriptions that clutter eBay search
-        clean = re.sub(r"\([^)]*(&|,|\bdisc\b|\bplayers\b|\bmanual\b)[^)]*\)", "", clean, flags=re.IGNORECASE)
-        clean = re.sub(r"\(\s*[a-zA-Z0-9]{1,3}\s*\)", "", clean)
+        # CeX labels in brackets ("(Game Only)", "(No Camera)", "(15)", "(No DLC)") describe the listing, not the
+        # title; left in, they become eBay search words and skew results toward bundles. Drop all of them.
+        clean = re.sub(r"\([^)]*\)", " ", clean)
         clean = clean.replace("(", " ").replace(")", " ")
         # 4. Clean punctuation: colons, slashes, extra commas
         clean = re.sub(r"[:/\\,]", " ", clean)
@@ -525,17 +526,17 @@ class EbayClient:
             clean = f"{clean} {sys}"
         return clean.strip()
 
-    def get_market_pricing(self, title: str, category_name: str = "", system_name: str = "") -> Dict[str, Any]:
-        token = self.get_token()
-        if not token:
-            return {"listings": 0, "low": None, "avg": None, "high": None}
-        query = self.clean_query(title, system_name)
-        cat_id = self.get_category_id(category_name, system_name)
-        url = (
-            f"https://api.ebay.com/buy/browse/v1/item_summary/search"
-            f"?q={urllib.parse.quote(query)}&category_ids={cat_id}&sort=price&limit=10"
-        )
-        req = urllib.request.Request(url, headers={
+    MIN_LOCAL_LISTINGS = 5
+
+    def _search(self, token: str, query: str, cat_id: str, local_used: bool) -> Optional[Dict[str, Any]]:
+        """One Browse search. local_used=True limits to Australian-located, used-condition listings."""
+        filters = [f"deliveryCountry:{self.country}", "buyingOptions:{FIXED_PRICE|BEST_OFFER}"]
+        if local_used:
+            filters += [f"itemLocationCountry:{self.country}", "conditions:{USED}"]
+        params = urllib.parse.urlencode({
+            "q": query, "category_ids": cat_id, "filter": ",".join(filters), "sort": "price", "limit": "50",
+        })
+        req = urllib.request.Request(f"https://api.ebay.com/buy/browse/v1/item_summary/search?{params}", headers={
             "Authorization": f"Bearer {token}",
             "X-EBAY-C-MARKETPLACE-ID": self.marketplace_id,
             "X-EBAY-C-ENDUSERCTX": f"contextualLocation=country%3D{self.country}",
@@ -544,22 +545,43 @@ class EbayClient:
         try:
             with urllib.request.urlopen(req, context=self.ctx, timeout=8) as resp:
                 res = json.loads(resp.read().decode("utf-8"))
-                total = res.get("total", 0)
-                prices = []
-                for it in res.get("itemSummaries", []):
-                    p = float(it.get("price", {}).get("value", 0))
-                    ship = float(it.get("shippingOptions", [{}])[0].get("shippingCost", {}).get("value", 0) or 0)
-                    prices.append(p + ship)
-                if prices:
-                    return {
-                        "listings": total,
-                        "low": round(min(prices), 2),
-                        "avg": round(sum(prices) / len(prices), 2),
-                        "high": round(max(prices), 2),
-                    }
-                return {"listings": total, "low": None, "avg": None, "high": None}
         except Exception:
-            return {"listings": 0, "low": None, "avg": None, "high": None}
+            return None
+        prices = []
+        for it in res.get("itemSummaries", []):
+            if "price" not in it:
+                continue  # multi-variation listings have no single price
+            p = float(it["price"].get("value", 0))
+            ship = float(it.get("shippingOptions", [{}])[0].get("shippingCost", {}).get("value", 0) or 0)
+            prices.append(p + ship)
+        return {"total": res.get("total", 0), "prices": sorted(prices)}
+
+    def get_market_pricing(self, title: str, category_name: str = "", system_name: str = "") -> Dict[str, Any]:
+        """eBay AU price stats. Prefers Australian-located used listings (what a charity-shop find competes
+        with); falls back to everything delivered to AU when fewer than MIN_LOCAL_LISTINGS exist.
+        Returns listings, low, typical (25th percentile), avg, high and basis ("AU used" / "All AU-delivered")."""
+        empty = {"listings": 0, "low": None, "typical": None, "avg": None, "high": None, "basis": ""}
+        token = self.get_token()
+        if not token:
+            return empty
+        query = self.clean_query(title, system_name)
+        cat_id = self.get_category_id(category_name, system_name)
+        basis = "AU used"
+        res = self._search(token, query, cat_id, local_used=True)
+        if not res or len(res["prices"]) < self.MIN_LOCAL_LISTINGS:
+            basis = "All AU-delivered"
+            res = self._search(token, query, cat_id, local_used=False)
+        if not res or not res["prices"]:
+            return {**empty, "listings": (res or {}).get("total", 0)}
+        pr = res["prices"]
+        return {
+            "listings": res["total"],
+            "low": round(pr[0], 2),
+            "typical": round(pr[len(pr) // 4], 2),
+            "avg": round(sum(pr) / len(pr), 2),
+            "high": round(pr[-1], 2),
+            "basis": basis,
+        }
 
 
 def transform_product(hit: Dict[str, Any], ebay_client: Optional[EbayClient] = None) -> Dict[str, Any]:
@@ -607,6 +629,8 @@ def transform_product(hit: Dict[str, Any], ebay_client: Optional[EbayClient] = N
     ebay_low = ""
     ebay_avg = ""
     ebay_high = ""
+    ebay_typical = ""
+    ebay_basis = ""
 
     if ebay_client and ebay_client.is_configured:
         ep = ebay_client.get_market_pricing(name, category, system)
@@ -618,6 +642,9 @@ def transform_product(hit: Dict[str, Any], ebay_client: Optional[EbayClient] = N
             ebay_avg = ep["avg"]
         if ep.get("high") is not None:
             ebay_high = ep["high"]
+        if ep.get("typical") is not None:
+            ebay_typical = ep["typical"]
+        ebay_basis = ep.get("basis", "")
 
     return {
         "Product Name": name,
@@ -643,6 +670,8 @@ def transform_product(hit: Dict[str, Any], ebay_client: Optional[EbayClient] = N
         "eBay High Price Link": ebay_high_url,
         "eBay Active Link": ebay_active_url,
         "Image URL": image_url,
+        "eBay Typical ($)": ebay_typical,
+        "eBay Price Basis": ebay_basis,
     }
 
 
@@ -675,6 +704,8 @@ def export_to_csv(products: List[Dict[str, Any]], filepath: str):
         "eBay Low Price Link",
         "eBay High Price Link",
         "eBay Active Link",
+        "eBay Typical ($)",
+        "eBay Price Basis",
     ]
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -707,6 +738,8 @@ def export_to_csv(products: List[Dict[str, Any]], filepath: str):
                 p.get("eBay Low Price Link"),
                 p.get("eBay High Price Link"),
                 p.get("eBay Active Link"),
+                f"{p.get('eBay Typical ($)'):.2f}" if isinstance(p.get("eBay Typical ($)"), (int, float)) else "",
+                p.get("eBay Price Basis", ""),
             ])
     print(f" Saved CSV: {filepath} ({len(products):,} products)")
 
@@ -767,6 +800,8 @@ def export_to_excel(
         ("eBay Low Price", 18, link_font, "@", None),
         ("eBay High Price", 18, link_font, "@", None),
         ("eBay Active Comps", 18, link_font, "@", None),
+        ("eBay Typical ($)", 15, bold_font, "$#,##0.00", ebay_header_fill),
+        ("eBay Price Basis", 18, regular_font, "@", ebay_header_fill),
     ]
 
     all_products = []
@@ -859,6 +894,8 @@ def export_to_excel(
                 p.get("eBay Low Price Link"),
                 p.get("eBay High Price Link"),
                 p.get("eBay Active Link"),
+                p.get("eBay Typical ($)"),
+                p.get("eBay Price Basis"),
             ]
 
             for col_idx, (val, (_, _, cell_font, num_fmt, _)) in enumerate(zip(vals, columns), 1):
@@ -895,7 +932,7 @@ def export_to_excel(
                     cell.value = val
                     if num_fmt and isinstance(val, (int, float)):
                         cell.number_format = num_fmt
-                    if col_idx in [2, 3, 4, 5, 6, 7, 9, 10, 11, 12]:
+                    if col_idx in [2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 21]:
                         cell.alignment = Alignment(horizontal="right")
                     elif col_idx in [13, 14, 15]:
                         cell.alignment = Alignment(horizontal="center")

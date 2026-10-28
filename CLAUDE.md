@@ -69,10 +69,11 @@ CeX Australia (`au.webuy.com`) uses Algolia for real-time inventory and pricing 
 The browser cannot call eBay directly (CORS + secret exposure), so `worker/` is a Cloudflare Worker that holds the eBay credentials as Worker secrets and returns clean price stats.
 - **URL**: `https://cex-ebay-proxy.vultr2.workers.dev` (constant `EBAY_PROXY_URL` in `index.html`)
 - **Route**: `GET /ebay/search?gtin=<8-14 digits>` or `GET /ebay/search?q=<text>&cat=books|movies|music|games` (`limit` 1-50, default 40; optional `exclude=word,word` drops listings whose title contains any word). `/health` for a ping.
-- **Response**: `{ count, returned, low, p25, median, p75, avg, currency, items:[{title,price,shipping,shippingKnown,total,condition,buying,url,image}], cached }`. Totals include postage to AU. Stats use fixed-price/best-offer listings when >= 3 exist (auctions distort "low").
+- **Response**: `{ basis, localCount?, count, returned, low, p25, median, p75, avg, currency, items:[{title,price,shipping,shippingKnown,total,condition,location,buying,url,image}], cached }`. Totals include postage to AU. Stats use fixed-price/best-offer listings when >= 3 exist (auctions distort "low").
+- **Australian used first** (added 2026-10-28): each lookup first searches `itemLocationCountry:AU` + `conditions:{USED}`; if fewer than 5 listings come back it re-searches everything delivered to AU and returns `basis: "all"` (else `"au_used"`). Overseas sellers made up ~90% of results and inflated rarer titles (Sled Storm PS2 $31 -> $20, Black Sheep Blu-ray $30 -> $18); popular titles barely moved because the cheapest listings were already local.
 - **Secrets**: `EBAY_APP_ID`, `EBAY_CERT_ID` set with `npx wrangler secret put` from `ebay_config.json`. Never in the repo.
 - **CORS**: allows `https://jamie671.github.io` and `http://localhost:*`.
-- **Cache**: edge-cached 1h per (gtin|q, cat, limit). eBay allows ~5,000 Browse calls/day.
+- **Cache**: edge-cached 1h per (gtin|q, cat, limit, exclude), key prefix `cache.local/v3`. Browse limit confirmed via Developer Analytics `rate_limit` endpoint: 5,000 calls/day (each lookup can use 2 eBay calls with the AU-used fallback, but counts once against the per-IP limit).
 - **Rate limit**: uncached lookups are capped at 30/min per IP (IPv6 by /64) via the `SEARCH_LIMIT` ratelimit binding in `wrangler.jsonc`; the Worker returns 503 if the binding is missing and 429 + `Retry-After` when over. `ebayLookup` in `index.html` waits and retries on 429.
 - **Errors**: callers get generic messages ("eBay lookup failed", "Service unavailable"); upstream detail goes to `console.error` (Workers observability logs).
 - **Limits**: Browse API = *active* listings only. eBay's sold-price API (Marketplace Insights) needs separate approval and is not used. eBay category IDs: Books 267, Movies & TV 11232, Music 11233, Video Games 139973.
@@ -126,7 +127,8 @@ The browser cannot call eBay directly (CORS + secret exposure), so `worker/` is 
    - Connects to official eBay Production API.
    - Formats CeX titles into clean search queries (flips `"Title, The"` -> `"The Title"`, removes age ratings and platform noise).
    - Pulls active Australian listings and calculates real price totals including shipping (`itemPrice + shippingCost`).
-   - Extracts: **eBay Active Listings**, **eBay Low Price ($)**, **eBay Avg Price ($)**, and **eBay High Price ($)**.
+   - Same Australian-used-first rule as the Worker (`EbayClient._search`, `MIN_LOCAL_LISTINGS = 5`), 50 fixed-price/best-offer listings per search, all bracketed CeX labels stripped from the query ("(Game Only)" etc.).
+   - Extracts: **eBay Active Listings**, **eBay Low Price ($)**, **eBay Avg Price ($)**, **eBay High Price ($)**, plus **eBay Typical ($)** (25th percentile) and **eBay Price Basis** ("AU used" / "All AU-delivered") appended as the last two CSV/Excel columns so existing column positions are unchanged.
 3. **Excel Workbook (`.xlsx`) & CSV Generation**:
    - Styled Excel with Segoe UI typography, thin borders, and color-coded headers (CeX Green, Voucher Blue, eBay Blue).
    - Formats prices as currency (`$#,##0.00`) and includes live Excel hyperlinks to eBay comps.

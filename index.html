@@ -2808,7 +2808,7 @@
         }
         if (item.exclude) { params.set("exclude", item.exclude); params.set("limit", "50"); }
         else params.set("limit", "40");
-        params.set("v", "2");
+        params.set("v", "3");
         let res = await fetch(`${EBAY_PROXY_URL}/ebay/search?${params}`);
         // The Worker caps uncached lookups per IP (30/min); a big bulk lot waits and retries instead of losing prices.
         for (let tries = 0; res.status === 429 && tries < 4; tries++) {
@@ -2868,7 +2868,7 @@
       if (!e) { pricedItem.ebay = null; return; }
       const r = pricedItem.gtin ? { ...e, relevant: (e.items || []).length, listings: e.items || [] } : relevantEbay(e, queryTitle);
       const top = r.listings[0] || null;
-      pricedItem.ebay = { low: r.low, p25: r.p25, median: r.median, count: e.count, returned: r.listings.length, relevant: r.relevant, top, url: top?.url || null, query: queryTitle };
+      pricedItem.ebay = { low: r.low, p25: r.p25, median: r.median, count: e.count, returned: r.listings.length, relevant: r.relevant, top, url: top?.url || null, query: queryTitle, basis: e.basis || "" };
     }
     async function refreshItemEbay(item) {
       const base = { title: item.rawTitle, gtin: item.gtin, platform: item.platform, category: item.category };
@@ -3176,9 +3176,9 @@
         return `<div class="flex items-baseline gap-2 mt-1 text-[11px] flex-wrap">
           <a href="${safeUrl(e.url)}" target="_blank" rel="noopener" class="text-blue-300 hover:underline font-bold">eBay</a>
           <span><span class="text-white font-bold">${money(item.ebaySell)}</span> <span class="text-slate-500">${basis} incl. post</span></span>
-          <span class="text-slate-500">${e.returned} matching listing${e.returned === 1 ? "" : "s"}</span>
+          <span class="text-slate-500">${e.returned} ${e.basis === "au_used" ? "Aussie used" : "matching"} listing${e.returned === 1 ? "" : "s"}</span>
           <span class="${net >= 0 ? "text-emerald-400" : "text-rose-400"} font-bold">${net >= 0 ? "+" : "-"}${money(Math.abs(net))} net</span>
-        </div>${item.ebayCapped ? `<div class="text-[10px] text-amber-400/80">eBay listings look like bundles or special editions, so CeX's shelf price is used instead</div>` : ""}${item.thin ? `<div class="text-[10px] text-amber-400/80">Only ${e.returned} matching listing${e.returned === 1 ? "" : "s"}, not enough to call it a buy</div>` : ""}`;
+        </div>${e.basis === "all" ? `<div class="text-[10px] text-slate-500">Too few Australian used listings, so this includes overseas and new copies</div>` : ""}${item.ebayCapped ? `<div class="text-[10px] text-amber-400/80">eBay listings look like bundles or special editions, so CeX's shelf price is used instead</div>` : ""}${item.thin ? `<div class="text-[10px] text-amber-400/80">Only ${e.returned} matching listing${e.returned === 1 ? "" : "s"}, not enough to call it a buy</div>` : ""}`;
       };
       const cexLine = (item) => {
         if (!item.found) return media && LOT_MODES[mode].cex ? `<div class="text-[11px] text-slate-500 mt-1">CeX: not stocked</div>` : "";
