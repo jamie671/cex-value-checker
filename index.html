@@ -43,7 +43,7 @@
         <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-red-600 to-red-500 flex items-center justify-center font-black text-white text-base shadow-md shadow-red-600/30">
           CeX
         </div>
-        <div>
+        <div class="hidden min-[420px]:block">
           <h1 class="text-sm font-extrabold text-white leading-tight flex items-center gap-1.5">
             Value Scanner
             <span class="text-[10px] font-bold px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 border border-red-500/30">AU</span>
@@ -61,6 +61,11 @@
         <button id="btnOpenLotModal" onclick="openLotModal()" class="flex items-center gap-1.5 bg-purple-600 hover:bg-purple-500 active:scale-95 text-white px-2.5 py-2 rounded-xl text-xs font-bold shadow-lg shadow-purple-600/30 transition">
           <i data-lucide="boxes" class="w-4 h-4"></i>
           <span>Bulk</span>
+        </button>
+        <button id="btnOpenListings" onclick="openListingsModal()" class="relative flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white px-2.5 py-2 rounded-xl text-xs font-bold shadow-lg shadow-emerald-600/30 transition">
+          <i data-lucide="tag" class="w-4 h-4"></i>
+          <span>List</span>
+          <span id="listingsBadge" class="hidden absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-white text-emerald-700 text-[10px] font-black flex items-center justify-center"></span>
         </button>
         <button id="btnExportDropdown" onclick="toggleExportMenu()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
           <i data-lucide="download" class="w-4 h-4"></i>
@@ -1314,6 +1319,10 @@
       if (html5QrCode && html5QrCode.isScanning) {
         scannerStopping = html5QrCode.stop().catch(console.error);
       }
+      if (draftScanMode) {
+        draftScanMode = false;
+        document.getElementById("scannerTitle").innerText = "Scan Product Barcode";
+      }
       if (bulkScanMode) {
         bulkScanMode = false;
         document.getElementById("scannerTitle").innerText = "Scan Product Barcode";
@@ -1421,6 +1430,7 @@
 
     async function onBarcodeFound(code) {
       if (bulkScanMode) { addScannedCode(code); return; }
+      if (draftScanMode) { stopBarcodeScanner(); if (navigator.vibrate) navigator.vibrate(200); createDraftFromBarcode(code); return; }
       stopBarcodeScanner();
       if (navigator.vibrate) navigator.vibrate(200);
 
@@ -2115,11 +2125,12 @@
     async function callGeminiVision(base64Data, apiKey, mimeType = "image/jpeg") {
       const prompt = `You are an expert video game appraiser. Examine this photo of game spines on a shelf or stacked flat. Extract every visible video game title and platform (e.g. 'The Orange Box Xbox 360', 'Tiger Woods PGA Tour 09 Xbox 360', 'Street Fighter IV Xbox 360', 'Half-Life 2 Xbox', 'Just Cause 2 Xbox 360', 'MotoGP 3 PS2', 'Spider-Man PS4', 'Grand Theft Auto V PS4'). Read left to right. If a spine is partly hidden, give your best guess at the title. Output ONLY the cleaned titles with platform, one title per line. No numbers, no bullet points, no extra text.`;
 
-      const payload = {
-        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Data } }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
-      };
+      return geminiGenerate([{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Data } }], apiKey, { temperature: 0.1, maxOutputTokens: 2048 });
+    }
 
+    // One Gemini request (text + images in `parts`), walking GEMINI_MODELS past retired model IDs.
+    async function geminiGenerate(parts, apiKey, generationConfig) {
+      const payload = { contents: [{ parts }], generationConfig };
       let lastErr = null;
       for (const model of GEMINI_MODELS) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
@@ -2835,7 +2846,7 @@
         if (item.exclude) { params.set("exclude", item.exclude); params.set("limit", "50"); }
         if (mode === "boardgames") params.set("sort", "match");
         else params.set("limit", "40");
-        params.set("v", "3");
+        params.set("v", "4");
         let res = await fetch(`${EBAY_PROXY_URL}/ebay/search?${params}`);
         // The Worker caps uncached lookups per IP (30/min); a big bulk lot waits and retries instead of losing prices.
         for (let tries = 0; res.status === 429 && tries < 4; tries++) {
@@ -2929,7 +2940,8 @@
       if (!e) { pricedItem.ebay = null; return; }
       const r = (pricedItem.gtin && !pricedItem.gtinViaTitle) ? { ...e, relevant: (e.items || []).length, listings: e.items || [] } : relevantEbay(e, queryTitle);
       const top = r.listings[0] || null;
-      pricedItem.ebay = { low: r.low, p25: r.p25, median: r.median, count: e.count, returned: r.listings.length, relevant: r.relevant, top, url: top?.url || null, query: queryTitle, basis: e.basis || "" };
+      pricedItem.ebay = { low: r.low, p25: r.p25, median: r.median, count: e.count, returned: r.listings.length, relevant: r.relevant, top, url: top?.url || null, query: queryTitle, basis: e.basis || "",
+        listings: r.listings.slice(0, 30).map(l => ({ title: l.title, total: l.total, cat: l.cat || null, url: l.url })) };
     }
     async function refreshItemEbay(item) {
       const base = { title: item.rawTitle, gtin: item.gtin, platform: item.platform, category: item.category };
@@ -3310,15 +3322,1061 @@
               <button type="button" onclick="removeLotItem(${idx})" title="Remove" class="shrink-0 w-7 h-7 rounded-full bg-slate-900 border border-slate-800 text-slate-500 hover:text-rose-300 hover:border-rose-800 flex items-center justify-center"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
             </div>
             ${altPicker(item, idx)}
-            ${hasAnyData ? ebayLinks(item) : ""}
+            <div class="flex items-center justify-between gap-2">
+              ${hasAnyData ? ebayLinks(item) : "<span></span>"}
+              ${hasAnyData ? `<button type="button" onclick="draftFromLotItem(${idx})" class="mt-1.5 shrink-0 inline-flex items-center gap-1 text-[10px] font-bold ${item.draftId ? "text-emerald-300 bg-emerald-950/40 border-emerald-800/50" : "text-white bg-emerald-700 hover:bg-emerald-600 border-emerald-600"} border rounded-lg px-2 py-1"><i data-lucide="tag" class="w-3 h-3"></i>${item.draftId ? "Open draft" : "Bought it · draft listing"}</button>` : ""}
+            </div>
           </div>`;
       }).join("");
 
       const leaveCount = items.filter(i => i.verdict === "leave").length;
       const summary = items.length ? `<div class="text-[10px] text-slate-400 text-center px-2">${buyCount ? `<span class="text-emerald-300 font-bold">${buyCount}</span> to buy` : "nothing clearly worth buying"}${leaveCount ? ` · ${leaveCount} to leave` : ""}${checkCount ? ` · <span class="text-amber-300 font-bold">${checkCount}</span> to check` : ""}${missCount ? ` · <span class="text-rose-300 font-bold">${missCount}</span> not found` : ""} · at $${lotState.settings.itemCost} each, $${postageFor(mode)} postage</div>` : "";
-      document.getElementById("lotTableBody").innerHTML = summary + cards;
+      const ebayBuys = items.filter(i => i.verdict === "buy" && i.route === "ebay" && !i.draftId).length;
+      const draftAll = ebayBuys > 1 ? `<button type="button" onclick="draftAllBuys()" class="w-full py-2 rounded-xl text-[11px] font-bold text-emerald-200 bg-emerald-950/40 border border-emerald-800/50 hover:bg-emerald-900/40 flex items-center justify-center gap-1.5"><i data-lucide="tags" class="w-3.5 h-3.5"></i>Bought the ${ebayBuys} eBay buys? Draft them all</button>` : "";
+      document.getElementById("lotTableBody").innerHTML = summary + draftAll + cards;
       lucide.createIcons();
     }
 </script>
+  <!-- Listing Drafts Modal -->
+  <div id="listingsModal" style="z-index:60" class="fixed inset-0 bg-black/85 backdrop-blur-md flex flex-col justify-end sm:justify-center p-0 sm:p-4 hidden">
+    <div class="bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-2xl max-w-2xl w-full mx-auto max-h-[94vh] flex flex-col shadow-2xl overflow-hidden">
+      <div class="p-4 border-b border-slate-800 flex items-center justify-between shrink-0 gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <button type="button" id="btnDraftBack" onclick="showDraftList()" class="hidden w-8 h-8 shrink-0 rounded-full bg-slate-800 text-slate-300 hover:text-white flex items-center justify-center" title="All drafts">
+            <i data-lucide="arrow-left" class="w-4 h-4"></i>
+          </button>
+          <div class="w-8 h-8 shrink-0 rounded-xl bg-emerald-600/20 text-emerald-400 flex items-center justify-center">
+            <i data-lucide="tag" class="w-4 h-4"></i>
+          </div>
+          <div class="min-w-0">
+            <h3 class="text-sm font-bold text-white" id="listingsTitle">eBay listing drafts</h3>
+            <p class="text-[11px] text-slate-400 truncate" id="listingsSubtitle">Photos or a barcode in, a priced listing out. Your cost stays with it.</p>
+          </div>
+        </div>
+        <button onclick="closeListingsModal()" class="w-8 h-8 shrink-0 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div class="p-4 overflow-y-auto flex-1" id="listingsBody"></div>
+    </div>
+    <input type="file" id="draftPhotoInput" accept="image/*" multiple class="hidden" onchange="onDraftPhotosChosen(this)">
+  </div>
+
+<script>
+    // ===================== Listing drafts =====================
+    // Phase 1: draft here (photos, AI read, comps, profit, listing check), then send to eBay by copying the
+    // fields into the eBay app or uploading a CSV of drafts in Seller Hub. Nothing here signs in to eBay.
+    const LISTING_KEY = "listing_drafts_v1";
+    const LIST_MODES = { games: "🎮 Game", movies: "🎬 Movie", books: "📚 Book", music: "💿 Music", boardgames: "🎲 Board game" };
+    // Used only when the Worker's category lookup is unavailable
+    const DEFAULT_CATEGORY = {
+      games: { id: "139973", name: "Video Games" },
+      movies: { id: "617", name: "DVDs & Blu-ray Discs" },
+      boardgames: { id: "180349", name: "Board Games (contemporary)" }
+    };
+    const DEFAULT_SPECIFICS = {
+      games: ["Platform", "Game Name", "Region Code", "Rating", "Genre", "Publisher"],
+      movies: ["Format", "Movie/TV Title", "Region Code", "Rating", "Genre"],
+      books: ["Book Title", "Author", "Format", "Language", "Publisher"],
+      music: ["Artist", "Release Title", "Format", "Genre"],
+      boardgames: ["Game Title", "Brand", "Number of Players", "Age Level"]
+    };
+    const DEFAULT_CONDITIONS = {
+      books: [{ id: "1000", name: "Brand New" }, { id: "2750", name: "Like New" }, { id: "4000", name: "Very Good" }, { id: "5000", name: "Good" }, { id: "6000", name: "Acceptable" }],
+      other: [{ id: "1000", name: "New" }, { id: "3000", name: "Used" }, { id: "7000", name: "For parts or not working" }]
+    };
+    // CeX/OCR platform labels -> the wording eBay AU listings use (reconciled against eBay's own values when loaded)
+    const EBAY_PLATFORM = {
+      "PS5": "Sony PlayStation 5", "PS4": "Sony PlayStation 4", "PS3": "Sony PlayStation 3", "PS2": "Sony PlayStation 2", "PS1": "Sony PlayStation 1",
+      "PSP": "Sony PSP", "PS Vita": "Sony PlayStation Vita", "Xbox Series": "Microsoft Xbox Series X", "Xbox One": "Microsoft Xbox One",
+      "Xbox 360": "Microsoft Xbox 360", "Xbox": "Microsoft Xbox", "Switch 2": "Nintendo Switch 2", "Switch": "Nintendo Switch", "Wii U": "Nintendo Wii U",
+      "Wii": "Nintendo Wii", "3DS": "Nintendo 3DS", "DS": "Nintendo DS", "GameCube": "Nintendo GameCube", "N64": "Nintendo 64",
+      "SNES": "Nintendo SNES", "GBA": "Nintendo Game Boy Advance", "Mega Drive": "Sega Mega Drive", "Dreamcast": "Sega Dreamcast", "PC": "PC"
+    };
+    const TITLE_MAX = 80;
+    const MAX_PHOTOS = 24, AI_PHOTOS = 6;
+
+    let listingDrafts = [];
+    try { listingDrafts = JSON.parse(localStorage.getItem(LISTING_KEY) || "[]"); } catch (e) { listingDrafts = []; }
+    let currentDraftId = null;
+    let draftScanMode = false;
+    let draftSaveTimer = null;
+    const aspectsMemo = {};
+    const draftBusy = {};   // draftId -> status text while comps/AI are running
+
+    function saveDrafts(now) {
+      clearTimeout(draftSaveTimer);
+      const write = () => {
+        try { localStorage.setItem(LISTING_KEY, JSON.stringify(listingDrafts)); }
+        catch (e) { console.warn("Could not save drafts", e); alert("Couldn't save drafts: this browser's storage is full."); }
+        updateListingsBadge();
+      };
+      if (now) write(); else draftSaveTimer = setTimeout(write, 300);
+    }
+    function updateListingsBadge() {
+      const n = listingDrafts.filter(d => d.status !== "listed").length;
+      const b = document.getElementById("listingsBadge");
+      if (!b) return;
+      b.innerText = n;
+      b.classList.toggle("hidden", !n);
+    }
+    const getDraft = (id) => listingDrafts.find(d => d.id === id);
+    const todayIso = () => new Date().toISOString().slice(0, 10);
+    const num2 = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+    const fmtMoney = (v) => v == null ? "-" : `${v < 0 ? "-" : ""}$${Math.abs(v).toFixed(2)}`;
+
+    function newDraft(fields) {
+      const mode = LIST_MODES[fields.mode] ? fields.mode : (LIST_MODES[lotState.mode] ? lotState.mode : "games");
+      const d = {
+        id: "d" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        created: Date.now(), updated: Date.now(), status: "draft", source: "blank", mode,
+        title: "", categoryId: "", categoryName: "", catSuggestions: [], condition: mode === "books" ? "5000" : "3000", conditionNote: "",
+        specifics: {}, description: "", price: null, postCharged: 0, postPaid: postageFor(mode), adRate: 0,
+        cost: null, bought: todayIso(), location: "", gtin: "", platformLabel: "", cexName: "", cexCash: null,
+        compsQuery: "", comps: null, photos: [], userEdited: {}, aiIdentified: "",
+        ...fields
+      };
+      d.mode = mode;
+      listingDrafts.unshift(d);
+      saveDrafts(true);
+      return d;
+    }
+
+    // ---- Photo storage (IndexedDB: photos are too big for localStorage) ----
+    let photoDbPromise = null;
+    function photoDb() {
+      if (!photoDbPromise) photoDbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open("cex_listing_photos", 1);
+        req.onupgradeneeded = () => req.result.createObjectStore("photos");
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      return photoDbPromise;
+    }
+    async function idbPhoto(op, id, blob) {
+      const db = await photoDb();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction("photos", op === "get" ? "readonly" : "readwrite");
+        const st = tx.objectStore("photos");
+        const req = op === "get" ? st.get(id) : op === "put" ? st.put(blob, id) : st.delete(id);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    const photoUrls = new Map();
+    async function photoUrl(id) {
+      if (photoUrls.has(id)) return photoUrls.get(id);
+      const blob = await idbPhoto("get", id).catch(() => null);
+      if (!blob) return null;
+      const u = URL.createObjectURL(blob);
+      photoUrls.set(id, u);
+      return u;
+    }
+    function forgetPhotoUrl(id) { const u = photoUrls.get(id); if (u) URL.revokeObjectURL(u); photoUrls.delete(id); }
+    async function hydratePhotos(root) {
+      for (const img of root.querySelectorAll("img[data-photo]")) {
+        const u = await photoUrl(img.dataset.photo);
+        if (u) img.src = u; else img.closest("[data-photo-wrap]")?.classList.add("opacity-40");
+      }
+    }
+    function canvasToBlob(c, q = 0.88) { return new Promise(r => c.toBlob(r, "image/jpeg", q)); }
+
+    // Brightness and sharpness from a small greyscale copy. Sharpness = variance of the Laplacian:
+    // a soft, out-of-focus shot has few hard edges, so the variance is low.
+    function analysePhoto(srcCanvas, natW, natH) {
+      const s = Math.min(1, 480 / Math.max(srcCanvas.width, srcCanvas.height));
+      const w = Math.max(8, Math.round(srcCanvas.width * s)), h = Math.max(8, Math.round(srcCanvas.height * s));
+      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      const ctx = c.getContext("2d"); ctx.drawImage(srcCanvas, 0, 0, w, h);
+      const px = ctx.getImageData(0, 0, w, h).data;
+      const g = new Float32Array(w * h);
+      let sum = 0;
+      for (let i = 0; i < w * h; i++) { const v = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2]; g[i] = v; sum += v; }
+      const mean = sum / (w * h);
+      let lsum = 0, lsq = 0, n = 0;
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        const l = g[i - 1] + g[i + 1] + g[i - w] + g[i + w] - 4 * g[i];
+        lsum += l; lsq += l * l; n++;
+      }
+      const sharp = n ? lsq / n - (lsum / n) ** 2 : 0;
+      const warn = [];
+      if (Math.max(natW, natH) < 500) warn.push("Too small: eBay needs 500px+");
+      if (mean < 70) warn.push("Dark");
+      else if (mean > 225) warn.push("Washed out");
+      if (sharp < 30) warn.push("May be blurry");
+      return { mean: Math.round(mean), sharp: Math.round(sharp), warn };
+    }
+    async function storePhotoFromImage(img, natW, natH) {
+      const scale = Math.min(1, 1600 / Math.max(img.width || img.naturalWidth, img.height || img.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.round((img.naturalWidth || img.width) * scale);
+      c.height = Math.round((img.naturalHeight || img.height) * scale);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      const q = analysePhoto(c, natW, natH);
+      const blob = await canvasToBlob(c);
+      const id = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+      await idbPhoto("put", id, blob);
+      return { id, w: c.width, h: c.height, natW, natH, warn: q.warn };
+    }
+
+    async function onDraftPhotosChosen(input) {
+      const files = [...(input.files || [])];
+      input.value = "";
+      if (!files.length) return;
+      let d = getDraft(currentDraftId);
+      const fresh = !d;
+      if (!d) { d = newDraft({ source: "photos" }); currentDraftId = d.id; }
+      const room = MAX_PHOTOS - d.photos.length;
+      if (room <= 0) return alert(`A draft holds up to ${MAX_PHOTOS} photos.`);
+      draftBusy[d.id] = `Adding ${Math.min(room, files.length)} photo${files.length === 1 ? "" : "s"}…`;
+      renderDraftEditor();
+      for (const f of files.slice(0, room)) {
+        try {
+          const img = await loadImageElement(f);
+          d.photos.push(await storePhotoFromImage(img, img.naturalWidth, img.naturalHeight));
+        } catch (e) { console.warn("photo failed", e); alert(`Couldn't read ${f.name || "a photo"}.`); }
+      }
+      delete draftBusy[d.id];
+      d.updated = Date.now();
+      saveDrafts(true);
+      renderDraftEditor();
+      // A brand-new photo draft goes straight to the AI read when a Gemini key is saved
+      if (fresh && d.photos.length && localStorage.getItem("bulk_gemini_key")) aiReadDraft(d.id);
+    }
+    function addDraftPhotos() { document.getElementById("draftPhotoInput").click(); }
+    async function removeDraftPhoto(id, pid) {
+      const d = getDraft(id); if (!d) return;
+      d.photos = d.photos.filter(p => p.id !== pid);
+      idbPhoto("del", pid).catch(() => {}); forgetPhotoUrl(pid);
+      saveDrafts(true); renderDraftEditor();
+    }
+    function makeCoverPhoto(id, pid) {
+      const d = getDraft(id); if (!d) return;
+      const i = d.photos.findIndex(p => p.id === pid);
+      if (i > 0) { d.photos.unshift(d.photos.splice(i, 1)[0]); saveDrafts(true); renderDraftEditor(); }
+    }
+    // Lift the shadows (gamma) and re-check the photo
+    async function brightenDraftPhoto(id, pid) {
+      const d = getDraft(id); if (!d) return;
+      const p = d.photos.find(x => x.id === pid);
+      const blob = await idbPhoto("get", pid);
+      if (!p || !blob) return;
+      const img = await loadImageElement(blob);
+      const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const ctx = c.getContext("2d"); ctx.drawImage(img, 0, 0);
+      const data = ctx.getImageData(0, 0, c.width, c.height);
+      // Gamma chosen so the average brightness lands near mid-grey; a photo that is already bright barely changes
+      const before = analysePhoto(c, p.natW, p.natH).mean;
+      const gamma = Math.min(1, Math.max(0.4, Math.log(0.5) / Math.log(Math.max(1, before) / 255)));
+      const lut = new Uint8ClampedArray(256);
+      for (let v = 0; v < 256; v++) lut[v] = Math.round(255 * Math.pow(v / 255, gamma) * 1.03);
+      const a = data.data;
+      for (let i = 0; i < a.length; i += 4) { a[i] = lut[a[i]]; a[i + 1] = lut[a[i + 1]]; a[i + 2] = lut[a[i + 2]]; }
+      ctx.putImageData(data, 0, 0);
+      const q = analysePhoto(c, p.natW, p.natH);
+      await idbPhoto("put", pid, await canvasToBlob(c));
+      forgetPhotoUrl(pid);
+      p.warn = q.warn;
+      saveDrafts(true); renderDraftEditor();
+    }
+    // Hand the photos to the phone (share sheet -> Save Images) so they can be added in the eBay app
+    async function saveDraftPhotos(id) {
+      const d = getDraft(id); if (!d || !d.photos.length) return;
+      const files = [];
+      for (const [i, p] of d.photos.entries()) {
+        const blob = await idbPhoto("get", p.id).catch(() => null);
+        if (blob) files.push(new File([blob], `${(d.title || "listing").replace(/[^\w]+/g, "-").slice(0, 40)}-${i + 1}.jpg`, { type: "image/jpeg" }));
+      }
+      try {
+        if (navigator.canShare && navigator.canShare({ files })) { await navigator.share({ files, title: d.title || "Listing photos" }); return; }
+      } catch (e) { if (e && e.name === "AbortError") return; console.warn(e); }
+      for (const f of files) {
+        const a = document.createElement("a"); a.href = URL.createObjectURL(f); a.download = f.name; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      }
+    }
+
+    // ---- Titles, specifics, category ----
+    function cleanListingName(name) {
+      let t = ebayQueryName(name || "") || (name || "");
+      const m = /^(.*?),\s*(The|A|An)$/i.exec(t);          // "Godfather, The" -> "The Godfather"
+      if (m) t = `${m[2]} ${m[1]}`;
+      return t.replace(/\s+/g, " ").trim();
+    }
+    function fitTitle(t) {
+      t = (t || "").replace(/\s+/g, " ").trim();
+      if (t.length <= TITLE_MAX) return t;
+      return t.slice(0, TITLE_MAX + 1).replace(/\s+\S*$/, "").trim();
+    }
+    function platformLabelFor(item) {
+      if (item.platform && EBAY_PLATFORM[item.platform]) return item.platform;
+      const def = PLATFORM_DEFS.find(p => p.category && p.category === item.category);
+      return def ? def.label : (item.platform || "");
+    }
+    function buildDraftTitle(name, mode, platformLabel) {
+      let t = cleanListingName(name);
+      if (mode === "games" && platformLabel && EBAY_PLATFORM[platformLabel]) {
+        const long = EBAY_PLATFORM[platformLabel];
+        if (!new RegExp(platformLabel.replace(/\s+/g, "\\s*"), "i").test(t)) t += ` ${long}${/^(PS\d|PSP)$/.test(platformLabel) ? " " + platformLabel : ""}`;
+        t += " PAL";
+      } else if (mode === "movies" && platformLabel && !new RegExp(platformLabel.split(" ")[0], "i").test(t)) {
+        t += ` ${platformLabel}`;
+      } else if (mode === "boardgames" && !/\bgame\b/i.test(t)) {
+        t += " Board Game";
+      }
+      return fitTitle(t);
+    }
+    function prefillSpecifics(mode, name, platformLabel, gtin) {
+      const s = {}, clean = cleanListingName(name);
+      if (mode === "games") { if (EBAY_PLATFORM[platformLabel]) s["Platform"] = EBAY_PLATFORM[platformLabel]; if (clean) s["Game Name"] = clean; }
+      if (mode === "movies") { if (platformLabel) s["Format"] = platformLabel === "4K UHD" ? "4K UHD Blu-ray" : platformLabel; if (clean) s["Movie/TV Title"] = clean; }
+      if (mode === "boardgames" && clean) s["Game Title"] = clean.replace(/\s*board\s*game$/i, "");
+      if (gtin) s[mode === "books" && /^97[89]/.test(gtin) ? "ISBN" : gtin.length === 12 ? "UPC" : "EAN"] = gtin;
+      return s;
+    }
+    // A plain starter description for drafts made without the AI read (no claims beyond what the name says)
+    function starterDescription(mode, name, platformLabel) {
+      const clean = cleanListingName(name);
+      if (!clean) return "";
+      const what = mode === "games" && EBAY_PLATFORM[platformLabel] ? `${clean} for ${EBAY_PLATFORM[platformLabel]} (PAL).`
+        : mode === "movies" && platformLabel ? `${clean} on ${platformLabel}.` : `${clean}.`;
+      return `${what}\nSee the photos for the exact item and its condition.`;
+    }
+    // Search words: the item's own name without listing filler (keeps comps comparable)
+    function compsQueryFor(d) {
+      if (d.compsQuery) return d.compsQuery;
+      return (d.title || "").replace(/\b(PAL|NTSC|game|board game|tested|working|free (post|postage|shipping)|sony|microsoft)\b/gi, " ").replace(/\s+/g, " ").trim();
+    }
+
+    async function workerGet(path) {
+      try {
+        const res = await fetch(`${EBAY_PROXY_URL}${path}`);
+        if (!res.ok) return null;
+        const d = await res.json();
+        return d && !d.error ? d : null;
+      } catch (e) { return null; }
+    }
+    async function loadAspects(catId) {
+      if (!catId) return null;
+      if (aspectsMemo[catId] !== undefined) return aspectsMemo[catId];
+      const key = `ebay_aspects_v1_${catId}`;
+      try {
+        const c = JSON.parse(localStorage.getItem(key) || "null");
+        if (c && Date.now() - c.ts < 7 * 86400000) return (aspectsMemo[catId] = c.data);
+      } catch (e) {}
+      const d = await workerGet(`/ebay/aspects?cat=${encodeURIComponent(catId)}`);
+      aspectsMemo[catId] = d && d.aspects ? { aspects: d.aspects, conditions: d.conditions || [] } : null;
+      if (aspectsMemo[catId]) try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data: aspectsMemo[catId] })); } catch (e) {}
+      return aspectsMemo[catId];
+    }
+    // Map a free-text value onto eBay's allowed values ("PS2" -> "Sony PlayStation 2")
+    function closestValue(value, values) {
+      if (!value || !values || !values.length) return null;
+      const v = matchNorm(value);
+      const exact = values.find(x => matchNorm(x) === v);
+      if (exact) return exact;
+      let best = null, bestS = 0;
+      for (const x of values) { const s = scoreTitle(value, x); if (s > bestS) { bestS = s; best = x; } }
+      return bestS >= 0.55 ? best : null;
+    }
+    function reconcileDraft(d) {
+      const asp = aspectsMemo[d.categoryId];
+      if (!asp) return;
+      for (const a of asp.aspects) {
+        const cur = d.specifics[a.name];
+        if (cur && a.mode === "SELECTION_ONLY" && a.values.length && !a.values.includes(cur)) {
+          const m = closestValue(cur, a.values);
+          if (m) d.specifics[a.name] = m;
+        }
+      }
+      const conds = asp.conditions && asp.conditions.length ? asp.conditions : null;
+      if (conds && !conds.some(c => c.id === d.condition)) {
+        const used = conds.find(c => /^used$/i.test(c.name)) || conds.find(c => /good|used/i.test(c.name)) || conds[0];
+        d.condition = used.id;
+      }
+    }
+    async function ensureCategory(d, force) {
+      if (d.categoryId && !force) { await loadAspects(d.categoryId); reconcileDraft(d); return; }
+      // 1. The leaf category most matching listings use; 2. eBay's suggestion for the title; 3. a default
+      const cats = {};
+      for (const c of (d.comps && d.comps.cats) || []) cats[c] = (cats[c] || 0) + 1;
+      const total = Object.values(cats).reduce((a, b) => a + b, 0);
+      const top = Object.entries(cats).sort((a, b) => b[1] - a[1])[0];
+      const q = (d.cexName ? cleanListingName(d.cexName) : compsQueryFor(d)) || d.title;
+      const sug = q ? await workerGet(`/ebay/category?q=${encodeURIComponent(q.slice(0, 100))}`) : null;
+      d.catSuggestions = (sug && sug.suggestions) || [];
+      let pick = null;
+      if (top && total >= 3 && top[1] / total >= 0.4) {
+        const named = d.catSuggestions.find(s => s.id === top[0]);
+        const def = Object.values(DEFAULT_CATEGORY).find(c => c.id === top[0]);
+        pick = { id: top[0], name: named ? named.name : def ? def.name : `Category ${top[0]}` };
+      } else if (d.catSuggestions[0]) pick = d.catSuggestions[0];
+      else if (DEFAULT_CATEGORY[d.mode]) pick = DEFAULT_CATEGORY[d.mode];
+      if (pick && !d.userEdited.category) { d.categoryId = pick.id; d.categoryName = pick.name; }
+      await loadAspects(d.categoryId);
+      reconcileDraft(d);
+    }
+    function setDraftCategory(id, catId, name) {
+      const d = getDraft(id); if (!d) return;
+      d.categoryId = String(catId || "").replace(/\D/g, "");
+      d.categoryName = name || (d.catSuggestions.find(s => s.id === d.categoryId) || {}).name || (d.categoryId ? `Category ${d.categoryId}` : "");
+      d.userEdited.category = true;
+      saveDrafts(true);
+      loadAspects(d.categoryId).then(() => { reconcileDraft(d); saveDrafts(); renderDraftEditor(); });
+    }
+
+    // ---- eBay comps for a draft ----
+    function statsFrom(listings) {
+      const t = listings.map(l => l.total).filter(v => v != null).sort((a, b) => a - b);
+      const pct = (p) => { if (!t.length) return null; const i = (p / 100) * (t.length - 1), lo = Math.floor(i), hi = Math.ceil(i); return Math.round((t[lo] + (t[hi] - t[lo]) * (i - lo)) * 100) / 100; };
+      return { n: t.length, low: t[0] ?? null, p25: pct(25), median: pct(50), p75: pct(75) };
+    }
+    function compsFromListings(listings, basis, exact) {
+      return { ...statsFrom(listings), basis: basis || "", exact: !!exact, at: Date.now(),
+        titles: listings.slice(0, 10).map(l => l.title), cats: listings.map(l => l.cat).filter(Boolean), url: listings[0]?.url || null };
+    }
+    async function refreshDraftComps(d) {
+      const query = compsQueryFor(d);
+      const exclude = d.mode === "boardgames" ? BOARDGAME_EXCLUDE.filter(w => !query.toLowerCase().includes(w)).join(",") : "";
+      if (!d.gtin && !query) { d.comps = null; return; }
+      let e = null, exact = false;
+      if (d.gtin) { e = await ebayLookup({ gtin: d.gtin }, d.mode); exact = true; }
+      // Used sellers rarely enter barcodes: if the barcode finds too little, price on the name instead
+      if ((!e || (e.items || []).length < 3) && query) {
+        const t = await ebayLookup({ title: query, platform: d.mode === "games" ? d.platformLabel : "", exclude }, d.mode);
+        if (t) { e = t; exact = false; }
+      }
+      if (!e) { d.comps = { n: 0, error: true, at: Date.now() }; return; }
+      const listings = exact ? (e.items || []) : relevantEbay(e, query).listings;
+      d.comps = compsFromListings(listings, e.basis, exact);
+      if (d.price == null && d.comps.n) d.price = pricePicks(d).middle;
+    }
+    const niceEnd = (v) => v == null ? null : Math.max(0.99, Math.round(v) - 0.01);
+    // Three asking prices from similar listings (totals include postage, so take off what the buyer pays)
+    function pricePicks(d) {
+      const c = d.comps || {};
+      if (!c.n) return {};
+      const post = num2(d.postCharged) || 0;
+      const under = c.n >= 4 ? Math.max(c.low, c.p25 - 0.5) : c.low;
+      return { undercut: niceEnd(under - post), middle: niceEnd((c.median ?? c.p25) - post), top: niceEnd((c.p75 ?? c.median) - post) };
+    }
+    function draftProfit(d) {
+      const price = num2(d.price) || 0, post = num2(d.postCharged) || 0, total = price + post;
+      if (!total) return null;
+      const fees = total * EBAY_FEE_RATE + EBAY_FEE_FIXED;
+      const ad = total * (num2(d.adRate) || 0) / 100;
+      const profit = total - fees - ad - (num2(d.postPaid) || 0) - (num2(d.cost) || 0);
+      return { total, fees: Math.round(fees * 100) / 100, ad: Math.round(ad * 100) / 100, profit: Math.round(profit * 100) / 100, margin: profit / total };
+    }
+    // Words most similar listings use that this title doesn't ("PAL" in 7 of 10)
+    const TITLE_SKIP = new Set(["the", "and", "for", "with", "free", "post", "postage", "shipping", "fast", "aus", "au", "australia", "australian", "seller", "new", "sealed", "brand", "used", "good", "great", "excellent", "condition", "vgc", "rare", "game", "games", "tested", "working", "works", "disc", "only", "of", "a", "in", "on", "to", "from", "very", "like", "mint", "cib", "inc", "incl", "includes", "w", "x", "edition"]);
+    function titleSuggestions(d) {
+      const titles = (d.comps && d.comps.titles) || [];
+      if (titles.length < 4) return [];
+      const have = new Set(matchNorm(d.title).split(" "));
+      const freq = new Map();
+      for (const t of titles) for (const w of new Set(matchNorm(t).split(" ").filter(Boolean))) freq.set(w, (freq.get(w) || 0) + 1);
+      return [...freq.entries()]
+        .filter(([w, n]) => n >= Math.max(3, Math.ceil(titles.length * 0.4)) && !have.has(w) && !TITLE_SKIP.has(w) && w.length > 1 && !/^\d{4,}$/.test(w))
+        .sort((a, b) => b[1] - a[1]).slice(0, 5)
+        .map(([w, n]) => ({ word: w.length <= 4 && /^[a-z]+$/.test(w) && !["blu", "ray"].includes(w) ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1), n, of: titles.length }));
+    }
+
+    // ---- Listing check: what is left before it can go on eBay ----
+    function draftSpecNames(d) {
+      const asp = aspectsMemo[d.categoryId];
+      const names = asp ? asp.aspects.map(a => a.name) : (DEFAULT_SPECIFICS[d.mode] || []);
+      for (const k of Object.keys(d.specifics)) if (!names.includes(k)) names.push(k);
+      return names;
+    }
+    function draftChecks(d) {
+      const asp = aspectsMemo[d.categoryId];
+      const missing = asp ? asp.aspects.filter(a => a.required && !(d.specifics[a.name] || "").trim()).map(a => a.name) : [];
+      const filled = Object.values(d.specifics).filter(v => (v || "").trim()).length;
+      const tl = (d.title || "").trim().length;
+      return [
+        { ok: d.photos.length > 0, text: d.photos.length ? `${d.photos.length} photo${d.photos.length === 1 ? "" : "s"}${d.photos.some(p => p.warn.length) ? " (some flagged)" : ""}` : "Add at least one photo" },
+        { ok: tl > 0 && tl <= TITLE_MAX, text: tl ? (tl > TITLE_MAX ? `Title is ${tl - TITLE_MAX} characters too long` : "Title") : "Write a title" },
+        { ok: !!d.categoryId, text: d.categoryId ? `Category: ${d.categoryName || d.categoryId}` : "Choose a category" },
+        { ok: !!d.condition, text: "Condition" },
+        { ok: asp ? !missing.length && filled > 0 : filled > 0, text: missing.length ? `eBay needs: ${missing.join(", ")}` : filled ? `${filled} item specific${filled === 1 ? "" : "s"}` : "Fill in item specifics" },
+        { ok: (d.description || "").trim().length >= 10, text: (d.description || "").trim() ? "Description" : "Write a description" },
+        { ok: num2(d.price) > 0, text: num2(d.price) > 0 ? `Price ${fmtMoney(num2(d.price))}` : "Set a price" },
+        { ok: num2(d.postPaid) != null, text: "Postage you pay" },
+        { ok: num2(d.cost) != null, text: num2(d.cost) != null ? `Cost ${fmtMoney(num2(d.cost))}` : "Add what you paid (for real profit later)" }
+      ];
+    }
+    // Custom label carries storage spot, cost and buy date onto eBay, so a sale can be matched back to its cost
+    function customLabel(d) {
+      const bits = [];
+      if ((d.location || "").trim()) bits.push(d.location.trim().replace(/[|,]/g, " "));
+      if (num2(d.cost) != null) bits.push(`$${num2(d.cost).toFixed(2)}`);
+      if (d.bought) bits.push(d.bought.replace(/-/g, "").slice(2));
+      return bits.join(" | ").slice(0, 50);
+    }
+
+    // ---- AI read of the photos (Gemini, the user's own key) ----
+    async function photoBase64(pid) {
+      const blob = await idbPhoto("get", pid);
+      if (!blob) return null;
+      return fileToJpegBase64(blob, 1280, 0.85);
+    }
+    function parseJsonLoose(text) {
+      const t = (text || "").replace(/```(json)?/gi, "").trim();
+      try { return JSON.parse(t); } catch (e) {}
+      const m = t.match(/\{[\s\S]*\}/);
+      if (m) try { return JSON.parse(m[0]); } catch (e) {}
+      return null;
+    }
+    async function aiReadDraft(id, hint) {
+      const d = getDraft(id); if (!d) return;
+      const key = (localStorage.getItem("bulk_gemini_key") || "").trim();
+      if (!key) { renderDraftEditor(); document.getElementById("draftGeminiKey")?.focus(); return; }
+      if (!d.photos.length) return alert("Add a photo of the item first.");
+      draftBusy[id] = hint ? `Reading the photos again as "${hint}"…` : "Reading the photos…";
+      renderDraftEditor();
+      try {
+        const imgs = [];
+        for (const p of d.photos.slice(0, AI_PHOTOS)) { const b = await photoBase64(p.id); if (b) imgs.push({ inline_data: { mime_type: "image/jpeg", data: b } }); }
+        await ensureCategory(d);
+        const names = draftSpecNames(d);
+        const known = [d.cexName && `CeX lists it as "${d.cexName}"`, d.gtin && `barcode ${d.gtin}`, d.userEdited.title && d.title && `the seller's title is "${d.title}"`].filter(Boolean).join("; ");
+        const prompt = `You help an Australian eBay seller list a second-hand ${LIST_MODES[d.mode].replace(/^\S+\s/, "").toLowerCase()}. Look at the photos.
+${known ? `Known: ${known}.` : ""}${hint ? `\nThe seller says this item is: "${hint}". Trust that over your own guess.` : ""}
+Reply with JSON only:
+{"identified": "what the item is, short", "confidence": 0.0-1.0,
+ "title": "eBay title, max 80 characters, words buyers search for: name, platform or format, edition, region (PAL) if shown. No emojis, no ALL CAPS, no L@@K, no claims the photos don't show",
+ "searchQuery": "2-6 words to find the same item on eBay",
+ "specifics": {${names.map(n => JSON.stringify(n) + ': "value"').join(", ")}},
+ "condition": "new" (sealed/unused) | "used" | "parts" (visibly broken),
+ "conditionNote": "one sentence: visible wear and what is included or missing (case, manual, disc, pieces). Never say it was tested",
+ "description": "3-6 short lines of plain text: what it is, what is included, condition. No postage, returns or payment text"}
+Leave out any specific you can't tell from the photos or general knowledge of this exact item.`;
+        const text = await geminiGenerate([{ text: prompt }, ...imgs], key, { temperature: 0.2, maxOutputTokens: 8192, responseMimeType: "application/json" });
+        const r = parseJsonLoose(text);
+        if (!r) throw new Error("The AI reply wasn't readable. Try again.");
+        const ue = d.userEdited;
+        d.aiIdentified = r.identified || "";
+        d.aiConfidence = typeof r.confidence === "number" ? r.confidence : null;
+        if (r.title && !ue.title) d.title = fitTitle(r.title);
+        if (r.searchQuery) d.compsQuery = String(r.searchQuery).slice(0, 100);
+        if (r.description && !ue.description) d.description = String(r.description).trim();
+        if (r.conditionNote && !ue.conditionNote) d.conditionNote = String(r.conditionNote).trim().slice(0, 1000);
+        if (r.condition && !ue.condition) d.condition = r.condition === "new" ? "1000" : r.condition === "parts" ? "7000" : (d.mode === "books" ? "5000" : "3000");
+        for (const [k, v] of Object.entries(r.specifics || {})) {
+          const val = Array.isArray(v) ? v.join(", ") : String(v ?? "").trim();
+          if (val && !/^(unknown|n\/?a|none|value|-)$/i.test(val) && !(ue.specifics || {})[k]) d.specifics[k] = val.slice(0, 65);
+        }
+        draftBusy[id] = "Checking eBay prices…";
+        renderDraftEditor();
+        await refreshDraftComps(d);
+        await ensureCategory(d, !ue.category);
+        d.updated = Date.now();
+      } catch (e) {
+        console.warn(e);
+        alert(`AI read failed: ${e.message || e}`);
+      } finally {
+        delete draftBusy[id];
+        saveDrafts(true);
+        renderDraftEditor();
+      }
+    }
+    function saveDraftGeminiKey() {
+      const v = (document.getElementById("draftGeminiKey")?.value || "").trim();
+      if (!v) return;
+      localStorage.setItem("bulk_gemini_key", v);
+      const d = getDraft(currentDraftId);
+      if (d && d.photos.length) aiReadDraft(d.id); else renderDraftEditor();
+    }
+    function aiNotIt(id) {
+      const hint = (document.getElementById("draftNotIt")?.value || "").trim();
+      if (!hint) return document.getElementById("draftNotIt")?.focus();
+      aiReadDraft(id, hint);
+    }
+
+    // ---- Creating drafts ----
+    async function enrichDraft(d, status) {
+      draftBusy[d.id] = status || "Checking eBay prices…";
+      if (currentDraftId === d.id) renderDraftEditor();
+      try {
+        if (!d.comps) await refreshDraftComps(d);
+        await ensureCategory(d);
+      } finally {
+        delete draftBusy[d.id];
+        saveDrafts(true);
+        if (currentDraftId === d.id) renderDraftEditor(); else if (!currentDraftId) renderDraftList();
+      }
+    }
+    function draftFieldsFromLotItem(item) {
+      const mode = lotState.mode || "games";
+      const name = item.found ? item.name : (item.gtinViaTitle || item.ebayTitled ? item.name : (item.rawTitle || item.name));
+      const pl = platformLabelFor(item);
+      const e = item.ebay;
+      const fields = {
+        mode, source: "lot", cexName: item.found ? item.name : "", cexCash: item.found ? item.cash : null,
+        gtin: item.gtin || "", platformLabel: pl,
+        title: buildDraftTitle(name, mode, pl), specifics: prefillSpecifics(mode, name, pl, item.gtin), description: starterDescription(mode, name, pl),
+        cost: lotState.settings.itemCost, postPaid: postageFor(mode),
+        compsQuery: e && e.query ? e.query : cleanListingName(name)
+      };
+      if (e && e.listings && e.listings.length) {
+        fields.comps = compsFromListings(e.listings, e.basis, item.gtin && !item.gtinViaTitle);
+        fields.price = pricePicks({ comps: fields.comps, postCharged: 0 }).middle;
+      }
+      return fields;
+    }
+    function draftFromLotItem(idx) {
+      const item = lotState.items[idx]; if (!item) return;
+      if (item.draftId && getDraft(item.draftId)) { openListingsModal(item.draftId); return; }
+      const d = newDraft(draftFieldsFromLotItem(item));
+      item.draftId = d.id;
+      renderLotTable();
+      openListingsModal(d.id);
+      enrichDraft(d);
+    }
+    async function draftAllBuys() {
+      const idxs = lotState.items.map((it, i) => (it.verdict === "buy" && it.route === "ebay" && !it.draftId) ? i : -1).filter(i => i >= 0);
+      const made = idxs.map(i => { const d = newDraft(draftFieldsFromLotItem(lotState.items[i])); lotState.items[i].draftId = d.id; return d; });
+      renderLotTable();
+      openListingsModal();
+      await mapLimit(made, 2, (d) => enrichDraft(d, "Finding category…"));
+    }
+    function newBlankDraft() {
+      const d = newDraft({ source: "blank" });
+      openListingsModal(d.id);
+    }
+    function newPhotoDraft() {
+      currentDraftId = null;     // the photo picker creates the draft once photos are chosen
+      addDraftPhotos();
+    }
+    function startDraftBarcodeScan() {
+      draftScanMode = true;
+      const p = startBarcodeScanner();
+      document.getElementById("scannerTitle").innerText = "Scan a barcode to start a listing";
+      return p;
+    }
+    async function createDraftFromBarcode(code) {
+      const gtin = String(code).replace(/\D/g, "");
+      if (gtin.length < 8 || gtin.length > 14) return alert(`"${code}" doesn't look like a product barcode.`);
+      let mode = /^97[89]/.test(gtin) && gtin.length === 13 ? "books" : (LIST_MODES[lotState.mode] ? lotState.mode : "games");
+      const d = newDraft({ source: "barcode", gtin, mode, specifics: prefillSpecifics(mode, "", "", gtin) });
+      openListingsModal(d.id);
+      draftBusy[d.id] = `Looking up barcode ${gtin}…`;
+      renderDraftEditor();
+      try {
+        // CeX's boxId is the EAN, so an exact query names most games and films
+        const res = await fetch(ALGOLIA_URL, { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requests: [{ indexName: INDEX_NAME, query: gtin, hitsPerPage: 3 }] }) });
+        const hits = ((await res.json()).results?.[0]?.hits || []).filter(h => String(h.boxId) === gtin);
+        if (hits[0]) {
+          const cat = hits[0].categoryFriendlyName || hits[0].categoryName || "";
+          const def = PLATFORM_DEFS.find(p => p.category && p.category === cat);
+          if (def && !def.media) d.mode = "games";
+          else if (/blu-?ray|dvd|film|4k/i.test(cat)) d.mode = "movies";
+          d.cexName = hits[0].boxName; d.cexCash = parseFloat(hits[0].cashPriceCalculated || 0);
+          d.platformLabel = def ? def.label : "";
+          d.title = buildDraftTitle(d.cexName, d.mode, d.platformLabel);
+          d.compsQuery = cleanListingName(d.cexName);
+          d.specifics = prefillSpecifics(d.mode, d.cexName, d.platformLabel, gtin);
+          d.description = starterDescription(d.mode, d.cexName, d.platformLabel);
+          d.postPaid = postageFor(d.mode);
+        }
+        // eBay by barcode: prices, and a name from the listings when CeX doesn't know it
+        const e = await ebayLookup({ gtin }, d.mode);
+        if (e && (e.items || []).length) {
+          if (!d.title) {
+            const name = d.mode === "boardgames" ? consensusTitle(e.items) : (consensusTitle(e.items) || e.items[0].title);
+            d.title = fitTitle(d.mode === "boardgames" ? buildDraftTitle(name, d.mode, "") : name);
+            d.compsQuery = name;
+            Object.assign(d.specifics, prefillSpecifics(d.mode, name, "", gtin));
+            d.description = starterDescription(d.mode, name, "");
+          }
+          if (e.items.length >= 3) { d.comps = compsFromListings(e.items, e.basis, true); d.price = pricePicks(d).middle; }
+        }
+        if (!d.title) d.title = "";
+      } catch (err) { console.warn(err); }
+      delete draftBusy[d.id];
+      saveDrafts(true);
+      await enrichDraft(d, d.title ? "Checking eBay prices…" : "Barcode not found. Add photos and let AI read them, or type a title.");
+    }
+
+    // ---- Field edits ----
+    function draftField(id, field, value, opts = {}) {
+      const d = getDraft(id); if (!d) return;
+      d[field] = value;
+      if (opts.user !== false) d.userEdited[field] = true;
+      d.updated = Date.now();
+      saveDrafts();
+      if (field === "mode") {
+        d.postPaid = postageFor(value);
+        if (!d.userEdited.condition) d.condition = value === "books" ? "5000" : "3000";
+        d.categoryId = ""; d.categoryName = ""; d.userEdited.category = false;
+        findCategoryClick(id);
+        return;
+      }
+      updateDraftDerived(d);
+    }
+    function draftSpec(id, name, value) {
+      const d = getDraft(id); if (!d) return;
+      if ((value || "").trim()) d.specifics[name] = value; else delete d.specifics[name];
+      d.userEdited.specifics = { ...(d.userEdited.specifics || {}), [name]: true };
+      d.updated = Date.now();
+      saveDrafts();
+      updateDraftDerived(d);
+    }
+    function addTitleWord(id, word) {
+      const d = getDraft(id); if (!d) return;
+      const t = fitTitle(`${d.title} ${word}`);
+      if (t === d.title) return alert("No room left in the 80 characters.");
+      d.title = t; d.userEdited.title = true; saveDrafts();
+      const el = document.getElementById("draftTitle"); if (el) el.value = t;
+      updateDraftDerived(d);
+    }
+    function setDraftPrice(id, v) {
+      const d = getDraft(id); if (!d) return;
+      d.price = v; saveDrafts();
+      const el = document.getElementById("draftPrice"); if (el) el.value = v;
+      updateDraftDerived(d);
+    }
+    async function refreshCompsClick(id) {
+      const d = getDraft(id); if (!d) return;
+      draftBusy[id] = "Checking eBay prices…"; renderDraftEditor();
+      await refreshDraftComps(d);
+      delete draftBusy[id]; saveDrafts(true); renderDraftEditor();
+    }
+    async function findCategoryClick(id) {
+      const d = getDraft(id); if (!d) return;
+      d.userEdited.category = false;
+      draftBusy[id] = "Finding the category…"; renderDraftEditor();
+      await ensureCategory(d, true);
+      delete draftBusy[id]; saveDrafts(true); renderDraftEditor();
+    }
+    function setDraftStatus(id, status) {
+      const d = getDraft(id); if (!d) return;
+      d.status = status; d.updated = Date.now(); saveDrafts(true); renderDraftEditor();
+    }
+    function deleteDraft(id) {
+      const d = getDraft(id); if (!d) return;
+      if (!confirm(`Delete this draft${d.title ? ` ("${d.title}")` : ""} and its photos?`)) return;
+      for (const p of d.photos) { idbPhoto("del", p.id).catch(() => {}); forgetPhotoUrl(p.id); }
+      listingDrafts = listingDrafts.filter(x => x.id !== id);
+      for (const it of lotState.items) if (it.draftId === id) delete it.draftId;
+      saveDrafts(true);
+      showDraftList();
+    }
+
+    // ---- Copy / export ----
+    function conditionName(d) {
+      const asp = aspectsMemo[d.categoryId];
+      const list = (asp && asp.conditions && asp.conditions.length) ? asp.conditions : (d.mode === "books" ? DEFAULT_CONDITIONS.books : DEFAULT_CONDITIONS.other);
+      return (list.find(c => c.id === d.condition) || {}).name || d.condition;
+    }
+    function draftAsText(d) {
+      const spec = Object.entries(d.specifics).filter(([, v]) => (v || "").trim()).map(([k, v]) => `${k}: ${v}`).join("\n");
+      return [
+        `TITLE\n${d.title}`,
+        `PRICE\n${fmtMoney(num2(d.price))}${num2(d.postCharged) ? ` + ${fmtMoney(num2(d.postCharged))} postage` : " (free postage)"}`,
+        `CATEGORY\n${d.categoryName || ""}${d.categoryId ? ` (${d.categoryId})` : ""}`,
+        `CONDITION\n${conditionName(d)}${d.conditionNote ? ` - ${d.conditionNote}` : ""}`,
+        spec ? `ITEM SPECIFICS\n${spec}` : "",
+        `DESCRIPTION\n${d.description}`,
+        `CUSTOM LABEL (SKU)\n${customLabel(d)}`
+      ].filter(Boolean).join("\n\n");
+    }
+    async function copyText(text, btn) {
+      try { await navigator.clipboard.writeText(text); }
+      catch (e) { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); }
+      if (btn) { const old = btn.innerHTML; btn.innerHTML = "✓ Copied"; setTimeout(() => { btn.innerHTML = old; }, 1400); }
+    }
+    function copyDraftField(id, what, btn) {
+      const d = getDraft(id); if (!d) return;
+      const text = what === "title" ? d.title : what === "description" ? descriptionWithCondition(d) : what === "specifics"
+        ? Object.entries(d.specifics).filter(([, v]) => (v || "").trim()).map(([k, v]) => `${k}: ${v}`).join("\n") : draftAsText(d);
+      copyText(text, btn);
+    }
+    function descriptionWithCondition(d) {
+      return [d.description.trim(), d.conditionNote ? `Condition: ${d.conditionNote.trim()}` : ""].filter(Boolean).join("\n\n");
+    }
+    function csvCell(v) {
+      const s = String(v ?? "");
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    }
+    // eBay Seller Hub "draft listings" upload template (Reports > Uploads). Drafts land in Seller Hub > Listings > Drafts,
+    // where photos are added and the listing is published. Item specifics go in "C:<name>" columns.
+    function exportDraftsCsv() {
+      const picked = listingDrafts.filter(d => d.selected && d.status !== "listed");
+      const drafts = picked.length ? picked : listingDrafts.filter(d => d.status === "draft");
+      if (!drafts.length) return alert("No drafts to export. Tick the drafts you want, or create one first.");
+      const noCat = drafts.filter(d => !d.categoryId || !(d.title || "").trim());
+      if (noCat.length && !confirm(`${noCat.length} draft${noCat.length === 1 ? " has" : "s have"} no title or category; eBay will reject ${noCat.length === 1 ? "it" : "them"}. Export anyway?`)) return;
+      const specNames = [...new Set(drafts.flatMap(d => Object.keys(d.specifics).filter(k => (d.specifics[k] || "").trim() && k !== "UPC")))];
+      const head = ["Action(SiteID=Australia|Country=AU|Currency=AUD|Version=1193|CC=UTF-8)", "Custom label (SKU)", "Category ID", "Title", "UPC", "Price", "Quantity", "Item photo URL", "Condition ID", "Description", "Format", ...specNames.map(n => `C:${n}`)];
+      const pad = (s) => s + ",".repeat(head.length - 1 - (s.replace(/"[^"]*"/g, "").match(/,/g) || []).length);
+      const lines = [
+        pad("#INFO,Version=0.0.2,Template= eBay-draft-listings-template_AU"),
+        pad("#INFO Action and Category ID are required fields. 1) Set Action to Draft 2) Please find the category ID for your listings here: https://pages.ebay.com/sellerinformation/news/categorychanges.html"),
+        pad(`"#INFO After you've successfully uploaded your draft from the Seller Hub Reports tab, complete your drafts to active listings here: https://www.ebay.com.au/sh/lst/drafts"`),
+        pad("#INFO"),
+        head.map(csvCell).join(",")
+      ];
+      for (const d of drafts) {
+        const desc = descriptionWithCondition(d).split(/\n+/).filter(l => l.trim()).map(l => `<p>${escapeHtml(l)}</p>`).join("");
+        const upc = d.specifics.UPC || (d.gtin && d.gtin.length === 12 ? d.gtin : "");
+        lines.push([
+          "Draft", customLabel(d), d.categoryId, fitTitle(d.title), upc, num2(d.price) != null ? num2(d.price).toFixed(2) : "", 1, "", d.condition, desc, "FixedPrice",
+          ...specNames.map(n => d.specifics[n] || "")
+        ].map(csvCell).join(","));
+      }
+      const blob = new Blob([lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `ebay-drafts-${todayIso()}.csv`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      for (const d of drafts) { if (d.status === "draft") d.status = "exported"; d.selected = false; }
+      saveDrafts(true);
+      renderDraftList();
+    }
+    function toggleDraftSelected(id, on) { const d = getDraft(id); if (d) { d.selected = on; saveDrafts(); } }
+
+    // ---- Modal + rendering ----
+    function openListingsModal(draftId) {
+      document.getElementById("listingsModal").classList.remove("hidden");
+      if (draftId && getDraft(draftId)) { currentDraftId = draftId; renderDraftEditor(); }
+      else showDraftList();
+    }
+    function closeListingsModal() {
+      saveDrafts(true);
+      document.getElementById("listingsModal").classList.add("hidden");
+      if (!document.getElementById("lotModal").classList.contains("hidden") && lotState.items.length) renderLotTable();
+    }
+    function showDraftList() {
+      currentDraftId = null;
+      renderDraftList();
+    }
+    const statusChip = (d) => d.status === "listed" ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-950/60 text-blue-300 border border-blue-800/40">Listed</span>`
+      : d.status === "exported" ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-950/60 text-purple-300 border border-purple-800/40">Sent to Seller Hub</span>` : "";
+
+    function renderDraftList() {
+      document.getElementById("btnDraftBack").classList.add("hidden");
+      document.getElementById("listingsTitle").innerText = "eBay listing drafts";
+      document.getElementById("listingsSubtitle").innerText = "Photos or a barcode in, a priced listing out. Your cost stays with it.";
+      const active = listingDrafts.filter(d => d.status !== "listed"), listed = listingDrafts.filter(d => d.status === "listed");
+      const row = (d) => {
+        const checks = draftChecks(d), done = checks.filter(c => c.ok).length;
+        const pr = draftProfit(d);
+        return `<div class="flex items-center gap-2.5 bg-slate-950/70 border border-slate-800 rounded-xl p-2 hover:border-emerald-700/60">
+          ${d.status !== "listed" ? `<input type="checkbox" ${d.selected ? "checked" : ""} onchange="toggleDraftSelected('${d.id}', this.checked)" class="w-4 h-4 accent-emerald-500 shrink-0" title="Include in CSV export">` : ""}
+          <button type="button" onclick="openListingsModal('${d.id}')" class="flex items-center gap-2.5 flex-1 min-w-0 text-left">
+            <div data-photo-wrap class="w-12 h-12 shrink-0 rounded-lg bg-slate-800 overflow-hidden flex items-center justify-center text-slate-600">
+              ${d.photos[0] ? `<img data-photo="${d.photos[0].id}" class="w-full h-full object-cover" alt="">` : `<i data-lucide="image" class="w-5 h-5"></i>`}
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="text-[12px] font-bold text-white truncate">${escapeHtml(d.title || "Untitled draft")}</div>
+              <div class="flex items-center gap-1.5 flex-wrap text-[10px] mt-0.5">
+                <span class="text-slate-400">${LIST_MODES[d.mode] || ""}</span>
+                ${num2(d.price) ? `<span class="text-white font-bold">${fmtMoney(num2(d.price))}</span>` : ""}
+                ${pr ? `<span class="${pr.profit >= 0 ? "text-emerald-400" : "text-rose-400"} font-bold">${pr.profit >= 0 ? "+" : ""}${fmtMoney(pr.profit)} profit</span>` : ""}
+                <span class="${done === checks.length ? "text-emerald-400" : "text-amber-300"}">${done === checks.length ? "✓ Ready" : `${done}/${checks.length} done`}</span>
+                ${statusChip(d)}
+                ${draftBusy[d.id] ? `<span class="text-slate-400 animate-pulse">${escapeHtml(draftBusy[d.id])}</span>` : ""}
+              </div>
+            </div>
+          </button>
+        </div>`;
+      };
+      const body = `
+        <div class="grid grid-cols-3 gap-2">
+          <button type="button" onclick="newPhotoDraft()" class="py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold flex flex-col items-center gap-1 shadow-lg shadow-emerald-600/20"><i data-lucide="camera" class="w-5 h-5"></i>From photos</button>
+          <button type="button" onclick="startDraftBarcodeScan()" class="py-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white text-[11px] font-bold flex flex-col items-center gap-1"><i data-lucide="scan-barcode" class="w-5 h-5"></i>Scan barcode</button>
+          <button type="button" onclick="newBlankDraft()" class="py-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white text-[11px] font-bold flex flex-col items-center gap-1"><i data-lucide="pencil" class="w-5 h-5"></i>Type it</button>
+        </div>
+        <p class="text-[10px] text-slate-500 mt-2">Bought something from the Bulk evaluator? Tap <span class="text-emerald-300 font-bold">Bought it · draft listing</span> on its card and the price, cost and comps come with it.</p>
+        <div class="mt-4 space-y-2">
+          ${active.length ? `<div class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Drafts (${active.length})</div>${active.map(row).join("")}` : `<div class="text-center text-xs text-slate-500 py-6 border border-dashed border-slate-800 rounded-xl">No drafts yet.</div>`}
+        </div>
+        ${active.length ? `
+        <div class="mt-4 bg-slate-950/80 border border-slate-800 rounded-xl p-3 space-y-2">
+          <button type="button" onclick="exportDraftsCsv()" class="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold flex items-center justify-center gap-2"><i data-lucide="file-up" class="w-4 h-4"></i>Export drafts for eBay Seller Hub (CSV)</button>
+          <details class="text-[11px] text-slate-400">
+            <summary class="cursor-pointer select-none text-slate-300 font-bold">How to send the CSV to eBay</summary>
+            <ol class="list-decimal ml-4 mt-1.5 space-y-1">
+              <li>Tick the drafts to send (none ticked = every draft not yet sent).</li>
+              <li>On a computer open eBay <b>Seller Hub → Reports → Uploads</b> and upload the file.</li>
+              <li>The listings appear in <b>Seller Hub → Listings → Drafts</b> and in the eBay app's drafts. Add the photos there (use <b>Save photos</b> on each draft to get them onto your phone), check postage, then list.</li>
+            </ol>
+            <p class="mt-1.5">Or skip the CSV: open a draft, tap <b>Copy all</b>, and paste the fields into eBay's own listing form.</p>
+          </details>
+        </div>` : ""}
+        ${listed.length ? `<details class="mt-4"><summary class="cursor-pointer select-none text-[10px] uppercase font-bold text-slate-400 tracking-wider">Listed (${listed.length})</summary><div class="mt-2 space-y-2">${listed.map(row).join("")}</div></details>` : ""}`;
+      const el = document.getElementById("listingsBody");
+      el.innerHTML = body;
+      lucide.createIcons();
+      hydratePhotos(el);
+      updateListingsBadge();
+    }
+
+    function renderDraftEditor() {
+      const d = getDraft(currentDraftId);
+      if (!d) return showDraftList();
+      document.getElementById("btnDraftBack").classList.remove("hidden");
+      document.getElementById("listingsTitle").innerText = d.title ? "Edit draft" : "New draft";
+      document.getElementById("listingsSubtitle").innerText = d.source === "lot" ? "From your bulk lot. Price and cost are filled in." : d.source === "barcode" ? `From barcode ${d.gtin}` : "Add photos, let AI fill it in, then check it.";
+      const id = d.id, busy = draftBusy[id];
+      const hasKey = !!(localStorage.getItem("bulk_gemini_key") || "").trim();
+      const asp = aspectsMemo[d.categoryId];
+      const conds = (asp && asp.conditions && asp.conditions.length) ? asp.conditions : (d.mode === "books" ? DEFAULT_CONDITIONS.books : DEFAULT_CONDITIONS.other);
+      const inputCls = "w-full px-2.5 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-500";
+      const label = (t, extra = "") => `<div class="flex items-center justify-between mb-1"><span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">${t}</span>${extra}</div>`;
+      const section = (n, t, inner) => `<div class="bg-slate-950/50 border border-slate-800 rounded-2xl p-3 space-y-2.5"><div class="text-[11px] font-black text-white flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-emerald-600/20 text-emerald-300 flex items-center justify-center text-[10px]">${n}</span>${t}</div>${inner}</div>`;
+      const smallBtn = (txt, onclick, cls = "text-slate-300 bg-slate-800 border-slate-700 hover:text-white") => `<button type="button" onclick="${onclick}" class="text-[10px] font-bold border rounded-lg px-2 py-1 ${cls}">${txt}</button>`;
+
+      // 1. Photos
+      const photoTiles = d.photos.map((p, i) => `
+        <div data-photo-wrap class="relative rounded-lg overflow-hidden border ${p.warn.length ? "border-amber-600/60" : "border-slate-700"} bg-slate-800 aspect-square">
+          <img data-photo="${p.id}" class="w-full h-full object-cover" alt="">
+          ${i === 0 ? `<span class="absolute top-1 left-1 text-[9px] font-black bg-emerald-600 text-white rounded px-1">COVER</span>` : ""}
+          ${p.warn.length ? `<span class="absolute bottom-1 left-1 w-5 h-5 rounded-full bg-amber-500 text-black text-[11px] font-black flex items-center justify-center" title="${escapeHtml(p.warn.join(", "))}">${i + 1}</span>` : ""}
+          <div class="absolute top-1 right-1 flex flex-col gap-1">
+            <button type="button" onclick="removeDraftPhoto('${id}','${p.id}')" title="Remove" class="w-6 h-6 rounded-full bg-black/70 text-white flex items-center justify-center"><i data-lucide="x" class="w-3 h-3"></i></button>
+            <button type="button" onclick="brightenDraftPhoto('${id}','${p.id}')" title="Brighten" class="w-6 h-6 rounded-full bg-black/70 text-amber-200 flex items-center justify-center"><i data-lucide="sun" class="w-3 h-3"></i></button>
+            ${i ? `<button type="button" onclick="makeCoverPhoto('${id}','${p.id}')" title="Make cover photo" class="w-6 h-6 rounded-full bg-black/70 text-emerald-200 flex items-center justify-center"><i data-lucide="star" class="w-3 h-3"></i></button>` : ""}
+          </div>
+        </div>`).join("");
+      const aiBlock = !d.photos.length ? "" : !hasKey ? `
+        <div class="bg-slate-900 border border-slate-700 rounded-xl p-2.5 space-y-1.5">
+          <div class="text-[11px] text-slate-300">Let AI fill in the listing from the photos: paste a free Google Gemini key (<a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="text-blue-300 underline">get one here</a>). It's saved on this device only.</div>
+          <div class="flex gap-2"><input id="draftGeminiKey" type="password" placeholder="AIza…" class="${inputCls}"><button type="button" onclick="saveDraftGeminiKey()" class="px-3 rounded-lg bg-emerald-600 text-white text-xs font-bold">Save</button></div>
+        </div>` : `
+        <div class="flex items-center gap-2 flex-wrap">
+          <button type="button" onclick="aiReadDraft('${id}')" ${busy ? "disabled" : ""} class="px-3 py-2 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold flex items-center gap-1.5 disabled:opacity-50"><i data-lucide="sparkles" class="w-3.5 h-3.5"></i>${d.aiIdentified ? "Read photos again" : "Read my photos"}</button>
+          ${d.aiIdentified ? `<span class="text-[11px] text-slate-300">We think this is <b class="text-white">${escapeHtml(d.aiIdentified)}</b>${d.aiConfidence != null ? ` <span class="text-slate-500">(${Math.round(d.aiConfidence * 100)}%)</span>` : ""}</span>` : `<span class="text-[10px] text-slate-500">Reads the first ${AI_PHOTOS} photos. Put the clearest shot of the front, labels and model number first.</span>`}
+        </div>
+        ${d.aiIdentified ? `<div class="flex gap-2"><input id="draftNotIt" placeholder="Not it? Say what it is, e.g. Sled Storm PS2" class="${inputCls}" onkeydown="if(event.key==='Enter') aiNotIt('${id}')"><button type="button" onclick="aiNotIt('${id}')" class="px-3 rounded-lg bg-slate-800 border border-slate-700 text-white text-[11px] font-bold shrink-0">Read again</button></div>` : ""}`;
+      const photos = section(1, "Photos", `
+        <div class="grid grid-cols-3 sm:grid-cols-4 gap-2">${photoTiles}
+          ${d.photos.length < MAX_PHOTOS ? `<button type="button" onclick="addDraftPhotos()" class="aspect-square rounded-lg border-2 border-dashed border-slate-700 text-slate-400 hover:text-white hover:border-emerald-600 flex flex-col items-center justify-center gap-1 text-[10px] font-bold"><i data-lucide="camera" class="w-5 h-5"></i>Add</button>` : ""}
+        </div>
+        ${d.photos.some(p => p.warn.length) ? `<div class="text-[10px] text-amber-300 space-y-0.5">${d.photos.map((p, i) => p.warn.length ? `<div><b>Photo ${i + 1}:</b> ${escapeHtml(p.warn.join(", "))}${p.warn.includes("Dark") ? " (try the ☀ button)" : ""}</div>` : "").join("")}</div>` : ""}
+        ${aiBlock}
+        ${d.photos.length ? `<div class="flex items-center gap-2">${smallBtn('<i data-lucide="share" class="w-3 h-3 inline"></i> Save photos to phone', `saveDraftPhotos('${id}')`)}<span class="text-[10px] text-slate-500">${d.photos.length}/${MAX_PHOTOS}. eBay needs these added when you publish.</span></div>` : ""}`);
+
+      // 2. Details
+      const sugg = titleSuggestions(d);
+      const specRows = draftSpecNames(d).map((name, i) => {
+        const a = asp && asp.aspects.find(x => x.name === name);
+        const vals = a ? a.values : [];
+        return `<label class="block"><span class="text-[10px] ${a && a.required ? "text-amber-300 font-bold" : "text-slate-400"}">${escapeHtml(name)}${a && a.required ? " *" : ""}</span>
+          <input ${vals.length ? `list="specdl_${i}"` : ""} value="${escapeHtml(d.specifics[name] || "")}" oninput="draftSpec('${id}', ${escapeHtml(JSON.stringify(name))}, this.value)" class="${inputCls} mt-0.5 !py-1.5">
+          ${vals.length ? `<datalist id="specdl_${i}">${vals.map(v => `<option value="${escapeHtml(v)}">`).join("")}</datalist>` : ""}</label>`;
+      }).join("");
+      const catSug = (d.catSuggestions || []).filter(s => s.id !== d.categoryId).slice(0, 4).map(s =>
+        `<button type="button" onclick="setDraftCategory('${id}', '${escapeHtml(s.id)}', ${escapeHtml(JSON.stringify(s.name))})" class="text-[10px] text-left text-slate-300 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 hover:border-emerald-600">${escapeHtml(s.name)}${s.path ? ` <span class="text-slate-500">· ${escapeHtml(s.path)}</span>` : ""}</button>`).join("");
+      const details = section(2, "Details", `
+        <div class="grid grid-cols-5 gap-1 bg-slate-950/80 border border-slate-800 rounded-xl p-1 text-[10px]">
+          ${Object.entries(LIST_MODES).map(([m, l]) => `<button type="button" onclick="draftField('${id}','mode','${m}')" class="py-1 rounded-lg font-bold ${d.mode === m ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-white"}">${l}</button>`).join("")}
+        </div>
+        <div>${label("Title", `<span id="draftTitleCount" class="text-[10px] font-bold"></span>`)}
+          <input id="draftTitle" maxlength="${TITLE_MAX}" value="${escapeHtml(d.title || "")}" oninput="draftField('${id}','title',this.value)" placeholder="What buyers would search for" class="${inputCls}">
+          <div id="draftTitleSugg" class="flex flex-wrap gap-1 mt-1.5">${sugg.map(s => `<button type="button" onclick="addTitleWord('${id}', ${escapeHtml(JSON.stringify(s.word))})" class="text-[10px] text-emerald-200 bg-emerald-950/40 border border-emerald-800/50 rounded-lg px-2 py-0.5">+ ${escapeHtml(s.word)} <span class="text-slate-500">in ${s.n} of ${s.of} similar</span></button>`).join("")}</div>
+        </div>
+        <div>${label("Category", smallBtn("Find again", `findCategoryClick('${id}')`))}
+          <div class="flex items-center gap-2">
+            <div class="flex-1 text-xs ${d.categoryId ? "text-white font-bold" : "text-slate-500"}">${d.categoryId ? escapeHtml(d.categoryName || "") : "Not set"}</div>
+            <input value="${escapeHtml(d.categoryId || "")}" inputmode="numeric" placeholder="ID" onchange="setDraftCategory('${id}', this.value)" class="${inputCls} !w-24 text-right">
+          </div>
+          ${catSug ? `<div class="flex flex-col gap-1 mt-1.5"><span class="text-[10px] text-slate-500">Or eBay suggests:</span>${catSug}</div>` : ""}
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <div>${label("Condition")}<select onchange="draftField('${id}','condition',this.value)" class="${inputCls}">${conds.map(c => `<option value="${escapeHtml(c.id)}" ${c.id === d.condition ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("")}</select></div>
+          <div class="col-span-2">${label("Condition notes")}<input value="${escapeHtml(d.conditionNote || "")}" oninput="draftField('${id}','conditionNote',this.value)" placeholder="e.g. Disc, case and manual. Light scratches." class="${inputCls}"></div>
+        </div>
+        <div>${label("Item specifics", `<span class="text-[10px] text-slate-500">${asp ? "from eBay for this category" : "common ones (eBay's list loads once the category is known)"}</span>`)}
+          <div class="grid grid-cols-2 gap-2">${specRows}</div>
+        </div>
+        <div>${label("Description", smallBtn("Copy", `copyDraftField('${id}','description',this)`))}
+          <textarea rows="5" oninput="draftField('${id}','description',this.value)" class="${inputCls} leading-relaxed" placeholder="What it is, what's included, condition.">${escapeHtml(d.description || "")}</textarea>
+        </div>`);
+
+      // 3. Price and profit
+      const c = d.comps || {}, picks = pricePicks(d);
+      const pickBtn = (k, txt) => picks[k] != null ? `<button type="button" data-pick="${picks[k]}" onclick="setDraftPrice('${id}', ${picks[k]})" class="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-center"><div class="text-[9px] uppercase font-bold text-slate-400">${txt}</div><div class="text-sm font-black text-white">${fmtMoney(picks[k])}</div></button>` : "";
+      const priceSec = section(3, "Price and postage", `
+        ${c.n ? `<div class="flex gap-2">${pickBtn("undercut", "Undercut")}${pickBtn("middle", "Middle")}${pickBtn("top", "Top end")}</div>
+          <div class="text-[10px] text-slate-500">From ${c.n} similar ${c.basis === "au_used" ? "Australian used " : ""}listings${c.exact ? " with this barcode" : ""} on eBay now${c.url ? ` (<a href="${safeUrl(c.url)}" target="_blank" rel="noopener" class="text-blue-300 underline">see one</a>)` : ""}. These are asking prices, not sold prices. ${num2(d.postCharged) ? "Postage you charge is taken off." : "Assumes free postage."}</div>`
+          : `<div class="text-[11px] ${c.error ? "text-rose-300" : "text-slate-500"}">${c.error ? "Couldn't reach eBay prices just now." : c.at ? "No similar listings found on eBay." : "No eBay prices yet."}</div>`}
+        <div>${smallBtn('<i data-lucide="refresh-cw" class="w-3 h-3 inline"></i> Check eBay prices', `refreshCompsClick('${id}')`)}<span class="text-[10px] text-slate-500 ml-2">searches: ${escapeHtml(compsQueryFor(d) || d.gtin || "-")}</span></div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <label class="block">${label("Your price")}<input id="draftPrice" type="number" step="0.01" min="0" value="${num2(d.price) ?? ""}" oninput="draftField('${id}','price',this.value)" class="${inputCls} text-right font-bold"></label>
+          <label class="block">${label("Postage buyer pays")}<input type="number" step="0.5" min="0" value="${num2(d.postCharged) ?? 0}" oninput="draftField('${id}','postCharged',this.value)" class="${inputCls} text-right"></label>
+          <label class="block">${label("Postage you pay")}<input type="number" step="0.5" min="0" value="${num2(d.postPaid) ?? ""}" oninput="draftField('${id}','postPaid',this.value)" class="${inputCls} text-right"></label>
+          <label class="block">${label("Ad rate %")}<input type="number" step="0.5" min="0" max="100" value="${num2(d.adRate) ?? 0}" oninput="draftField('${id}','adRate',this.value)" class="${inputCls} text-right"></label>
+          <label class="block">${label("You paid")}<input type="number" step="0.5" min="0" value="${num2(d.cost) ?? ""}" oninput="draftField('${id}','cost',this.value)" placeholder="0.00" class="${inputCls} text-right"></label>
+          <label class="block">${label("Bought on")}<input type="date" value="${escapeHtml(d.bought || "")}" oninput="draftField('${id}','bought',this.value)" class="${inputCls}"></label>
+          <label class="block col-span-2">${label("Stored at")}<input value="${escapeHtml(d.location || "")}" oninput="draftField('${id}','location',this.value)" placeholder="e.g. Shelf B2, Tub 4" class="${inputCls}"></label>
+        </div>
+        <div id="draftProfitBox"></div>`);
+
+      // 4. Listing check + actions
+      const finish = section(4, "Listing check", `
+        <div id="draftChecks" class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1"></div>
+        <div class="text-[10px] text-slate-500">Custom label (goes on eBay as the SKU): <span id="draftSku" class="text-slate-300 font-mono"></span></div>
+        <div class="grid grid-cols-2 gap-2 pt-1">
+          <button type="button" onclick="copyDraftField('${id}','all',this)" class="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-1.5"><i data-lucide="copy" class="w-3.5 h-3.5"></i>Copy all</button>
+          <a href="https://www.ebay.com.au/sl/sell" target="_blank" rel="noopener" onclick="copyDraftField('${id}','title')" class="py-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"><i data-lucide="external-link" class="w-3.5 h-3.5"></i>Open eBay sell form</a>
+          <button type="button" onclick="copyDraftField('${id}','title',this)" class="py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 text-[11px] font-bold">Copy title</button>
+          <button type="button" onclick="copyDraftField('${id}','specifics',this)" class="py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 text-[11px] font-bold">Copy item specifics</button>
+        </div>
+        <div class="flex items-center justify-between pt-1">
+          ${d.status === "listed" ? smallBtn("Move back to drafts", `setDraftStatus('${id}','draft')`) : smallBtn("✓ Mark as listed on eBay", `setDraftStatus('${id}','listed')`, "text-blue-200 bg-blue-950/40 border-blue-800/50")}
+          ${smallBtn('<i data-lucide="trash-2" class="w-3 h-3 inline"></i> Delete draft', `deleteDraft('${id}')`, "text-rose-300 bg-slate-900 border-rose-900/50")}
+        </div>`);
+
+      const el = document.getElementById("listingsBody");
+      const scroll = el.scrollTop;
+      el.innerHTML = `
+        ${busy ? `<div class="sticky top-0 z-10 -mt-1 mb-3 bg-emerald-950/90 border border-emerald-800/60 text-emerald-200 text-[11px] font-bold rounded-xl px-3 py-2 flex items-center gap-2"><span class="animate-spin inline-block w-3 h-3 border-2 border-emerald-300 border-t-transparent rounded-full"></span>${escapeHtml(busy)}</div>` : ""}
+        ${statusChip(d) ? `<div class="mb-2">${statusChip(d)}</div>` : ""}
+        <div class="space-y-3">${photos}${details}${priceSec}${finish}</div>`;
+      el.scrollTop = scroll;
+      updateDraftDerived(d);
+      lucide.createIcons();
+      hydratePhotos(el);
+    }
+
+    // Refresh the bits that depend on typed values without rebuilding the form (keeps focus and caret)
+    function updateDraftDerived(d) {
+      const tc = document.getElementById("draftTitleCount");
+      if (tc) { const n = (d.title || "").length; tc.innerText = `${n}/${TITLE_MAX}`; tc.className = `text-[10px] font-bold ${n > TITLE_MAX ? "text-rose-400" : n >= 60 ? "text-emerald-400" : "text-slate-500"}`; }
+      const pb = document.getElementById("draftProfitBox");
+      if (pb) {
+        const p = draftProfit(d);
+        pb.innerHTML = !p ? `<div class="text-[11px] text-slate-500">Set a price to see what you'll make.</div>` : `
+          <div class="bg-slate-900 border ${p.profit >= 0 ? "border-emerald-800/50" : "border-rose-800/50"} rounded-xl p-2.5 text-[11px]">
+            <div class="flex justify-between"><span class="text-slate-400">Buyer pays</span><span class="text-white font-bold">${fmtMoney(p.total)}</span></div>
+            <div class="flex justify-between"><span class="text-slate-400">eBay fees (${(EBAY_FEE_RATE * 100).toFixed(1)}% + $${EBAY_FEE_FIXED.toFixed(2)})</span><span class="text-rose-300">-${fmtMoney(p.fees)}</span></div>
+            ${p.ad ? `<div class="flex justify-between"><span class="text-slate-400">Promoted listing ad</span><span class="text-rose-300">-${fmtMoney(p.ad)}</span></div>` : ""}
+            <div class="flex justify-between"><span class="text-slate-400">Postage you pay</span><span class="text-rose-300">-${fmtMoney(num2(d.postPaid) || 0)}</span></div>
+            <div class="flex justify-between"><span class="text-slate-400">What you paid</span><span class="text-rose-300">-${fmtMoney(num2(d.cost) || 0)}</span></div>
+            <div class="flex justify-between border-t border-slate-800 mt-1 pt-1"><span class="text-white font-bold">You make</span><span class="font-black ${p.profit >= 0 ? "text-emerald-400" : "text-rose-400"}">${fmtMoney(p.profit)} <span class="text-slate-500 font-bold">(${Math.round(p.margin * 100)}%)</span></span></div>
+            ${d.cexCash ? `<div class="text-[10px] text-slate-500 mt-1">CeX would pay ${fmtMoney(d.cexCash)} cash${num2(d.cost) != null ? ` (${fmtMoney(d.cexCash - num2(d.cost))} profit)` : ""}.</div>` : ""}
+          </div>`;
+      }
+      const ch = document.getElementById("draftChecks");
+      if (ch) ch.innerHTML = draftChecks(d).map(c => `<div class="text-[11px] flex items-start gap-1.5 ${c.ok ? "text-slate-300" : "text-amber-300"}"><span class="${c.ok ? "text-emerald-400" : "text-amber-400"} font-black">${c.ok ? "✓" : "○"}</span><span>${escapeHtml(c.text)}</span></div>`).join("");
+      const price = num2(d.price);
+      document.querySelectorAll("#listingsBody [data-pick]").forEach(b => {
+        const on = price != null && Math.abs(price - parseFloat(b.dataset.pick)) < 0.005;
+        b.classList.toggle("border-emerald-500", on); b.classList.toggle("bg-emerald-950/40", on);
+        b.classList.toggle("border-slate-700", !on); b.classList.toggle("bg-slate-900", !on);
+      });
+      const sku = document.getElementById("draftSku");
+      if (sku) sku.innerText = customLabel(d) || "-";
+    }
+
+    document.addEventListener("DOMContentLoaded", updateListingsBadge);
+</script>
+
 </body>
 </html>

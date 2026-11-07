@@ -3,12 +3,15 @@
 //
 //   GET /ebay/search?gtin=9780747532699
 //   GET /ebay/search?q=Inception%20blu-ray&cat=movies
+//   GET /ebay/category?q=Sled%20Storm%20PS2             -> eBay AU category suggestions for a listing title
+//   GET /ebay/aspects?cat=139973                          -> item specifics + allowed conditions for a category
 //   cat = books | movies | music | games | boardgames | any      limit = 1..50 (default 40)
 //   sort = price (default, cheapest first) | match (eBay best match)
 //   exclude = comma list of words; listings whose title contains any are dropped (e.g. guitar,bundle)
 //
 // Response: { query, basis: "au_used"|"all", localCount?, count, returned, low, p25, median, p75, avg, currency,
-//             items:[{title,price,shipping,total,condition,location,url,image}], cached }
+//             items:[{title,price,shipping,total,condition,location,url,image,cat}], cached }
+// cat = the listing's leaf category ID (used to pick a category when drafting a listing)
 // basis "au_used" = Australian-located used listings (preferred); "all" = fallback to everything delivered to AU.
 
 const MARKETPLACE = "EBAY_AU";
@@ -130,6 +133,7 @@ async function searchEbayOnce(env, { gtin, q, cat, limit, exclude, localUsed, so
       buying: (it.buyingOptions || []).join("|"),
       url: it.itemWebUrl,
       image: it.image?.imageUrl || it.thumbnailImages?.[0]?.imageUrl || null,
+      cat: it.leafCategoryIds?.[0] || it.categories?.[0]?.categoryId || null,
       currency: it.price?.currency || "AUD"
     });
   }
@@ -151,6 +155,64 @@ async function searchEbayOnce(env, { gtin, q, cat, limit, exclude, localUsed, so
   };
 }
 
+// ---- Listing helpers (Taxonomy + Metadata APIs, application token) ----
+const TAXONOMY_TTL = 86400;
+let treeIdCache = null;
+async function ebayGet(env, url) {
+  const token = await getToken(env);
+  const res = await fetch(url, { headers: { "Authorization": `Bearer ${token}`, "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE, "Accept": "application/json" } });
+  if (res.status === 204) return {};
+  if (!res.ok) throw new Error(`eBay ${new URL(url).pathname} error ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  return res.json();
+}
+async function categoryTreeId(env) {
+  if (treeIdCache) return treeIdCache;
+  const d = await ebayGet(env, `https://api.ebay.com/commerce/taxonomy/v1/get_default_category_tree_id?marketplace_id=${MARKETPLACE}`);
+  treeIdCache = d.categoryTreeId || "15";
+  return treeIdCache;
+}
+async function categorySuggestions(env, q) {
+  const tree = await categoryTreeId(env);
+  const d = await ebayGet(env, `https://api.ebay.com/commerce/taxonomy/v1/category_tree/${tree}/get_category_suggestions?q=${encodeURIComponent(q)}`);
+  const suggestions = (d.categorySuggestions || []).slice(0, 8).map(s => ({
+    id: s.category?.categoryId,
+    name: s.category?.categoryName,
+    path: (s.categoryTreeNodeAncestors || []).map(a => a.categoryName).reverse().join(" > ")
+  })).filter(s => s.id);
+  return { q, suggestions };
+}
+async function categoryAspects(env, catId) {
+  const tree = await categoryTreeId(env);
+  const [asp, cond] = await Promise.all([
+    ebayGet(env, `https://api.ebay.com/commerce/taxonomy/v1/category_tree/${tree}/get_item_aspects_for_category?category_id=${catId}`),
+    ebayGet(env, `https://api.ebay.com/sell/metadata/v1/marketplace/${MARKETPLACE}/get_item_condition_policies?filter=${encodeURIComponent(`categoryIds:{${catId}}`)}`).catch(err => {
+      console.error("condition policies failed:", err && err.message ? err.message : err);
+      return {};
+    })
+  ]);
+  // Required first, then eBay's recommended ones; optional extras are left out to keep the form short
+  const aspects = (asp.aspects || []).map(a => ({
+    name: a.localizedAspectName,
+    required: !!a.aspectConstraint?.aspectRequired,
+    usage: a.aspectConstraint?.aspectUsage || "OPTIONAL",
+    mode: a.aspectConstraint?.aspectMode || "FREE_TEXT",
+    multi: a.aspectConstraint?.itemToAspectCardinality === "MULTI",
+    values: (a.aspectValues || []).slice(0, 60).map(v => v.localizedValue)
+  })).filter(a => a.name && (a.required || a.usage === "RECOMMENDED")).slice(0, 25);
+  const policy = (cond.itemConditionPolicies || [])[0] || {};
+  const conditions = (policy.itemConditions || []).map(c => ({ id: c.conditionId, name: c.conditionDescription }));
+  return { categoryId: catId, aspects, conditions, conditionRequired: !!policy.itemConditionRequired };
+}
+
+async function cachedJson(ctx, cacheKey, ttl, cors, produce) {
+  const cache = caches.default;
+  const hit = await cache.match(cacheKey);
+  if (hit) return json({ ...(await hit.json()), cached: true }, 200, cors);
+  const result = await produce();
+  ctx.waitUntil(cache.put(cacheKey, new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${ttl}` } })));
+  return json({ ...result, cached: false }, 200, { ...cors, "Cache-Control": `public, max-age=${ttl}` });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const origin = request.headers.get("Origin") || "";
@@ -158,7 +220,8 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     const url = new URL(request.url);
     if (url.pathname === "/" || url.pathname === "/health") return json({ ok: true, service: "cex-ebay-proxy" }, 200, cors);
-    if (url.pathname !== "/ebay/search") return json({ error: "Not found" }, 404, cors);
+    const ROUTES = ["/ebay/search", "/ebay/category", "/ebay/aspects"];
+    if (!ROUTES.includes(url.pathname)) return json({ error: "Not found" }, 404, cors);
     if (!env.EBAY_APP_ID || !env.EBAY_CERT_ID) {
       console.error("EBAY_APP_ID / EBAY_CERT_ID secrets are not set");
       return json({ error: "Service unavailable" }, 503, cors);
@@ -168,6 +231,27 @@ export default {
     if (!env.SEARCH_LIMIT) {
       console.error("SEARCH_LIMIT rate-limit binding is missing");
       return json({ error: "Service unavailable" }, 503, cors);
+    }
+
+    const limited = async () => {
+      const { success } = await env.SEARCH_LIMIT.limit({ key: ipKey(request.headers.get("CF-Connecting-IP") || "unknown") });
+      return success;
+    };
+    // Listing helpers: cached for a day (categories and item specifics rarely change); only uncached calls count.
+    if (url.pathname === "/ebay/category" || url.pathname === "/ebay/aspects") {
+      const isCat = url.pathname === "/ebay/category";
+      const q = (url.searchParams.get("q") || "").trim().slice(0, 120);
+      const catId = (url.searchParams.get("cat") || "").replace(/\D/g, "").slice(0, 12);
+      if (isCat && q.length < 2) return json({ error: "Provide q" }, 400, cors);
+      if (!isCat && !catId) return json({ error: "Provide cat (numeric category ID)" }, 400, cors);
+      const key = new Request(`https://cache.local/v1${url.pathname}?${isCat ? `q=${encodeURIComponent(q.toLowerCase())}` : `cat=${catId}`}`);
+      if (!(await caches.default.match(key)) && !(await limited())) return json({ error: "Too many requests" }, 429, { ...cors, "Retry-After": "15" });
+      try {
+        return await cachedJson(ctx, key, TAXONOMY_TTL, cors, () => isCat ? categorySuggestions(env, q) : categoryAspects(env, catId));
+      } catch (err) {
+        console.error("eBay taxonomy lookup failed:", err && err.message ? err.message : err);
+        return json({ error: "eBay lookup failed" }, 502, cors);
+      }
     }
 
     const gtin = (url.searchParams.get("gtin") || "").replace(/\D/g, "");
@@ -180,7 +264,7 @@ export default {
     if (gtin && !(gtin.length >= 8 && gtin.length <= 14)) return json({ error: "gtin must be 8-14 digits" }, 400, cors);
 
     // Edge cache: same lookup within an hour is free and instant
-    const cacheKey = new Request(`https://cache.local/v3/ebay/search?gtin=${gtin}&q=${encodeURIComponent(q.toLowerCase())}&cat=${cat}&limit=${limit}&ex=${encodeURIComponent(exclude.join(","))}&sort=${sort}`);
+    const cacheKey = new Request(`https://cache.local/v4/ebay/search?gtin=${gtin}&q=${encodeURIComponent(q.toLowerCase())}&cat=${cat}&limit=${limit}&ex=${encodeURIComponent(exclude.join(","))}&sort=${sort}`);
     const cache = caches.default;
     const hit = await cache.match(cacheKey);
     if (hit) {
@@ -188,8 +272,7 @@ export default {
       return json({ ...body, cached: true }, 200, cors);
     }
     // Only uncached lookups (the ones that call eBay) count against the limit.
-    const { success } = await env.SEARCH_LIMIT.limit({ key: ipKey(request.headers.get("CF-Connecting-IP") || "unknown") });
-    if (!success) return json({ error: "Too many requests" }, 429, { ...cors, "Retry-After": "15" });
+    if (!(await limited())) return json({ error: "Too many requests" }, 429, { ...cors, "Retry-After": "15" });
     try {
       const result = await searchEbay(env, { gtin, q, cat, limit, exclude, sort });
       const resp = json({ ...result, cached: false }, 200, { ...cors, "Cache-Control": `public, max-age=${CACHE_TTL}` });
