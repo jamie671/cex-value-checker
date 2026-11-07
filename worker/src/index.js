@@ -13,6 +13,13 @@
 //             items:[{title,price,shipping,total,condition,location,url,image,cat}], cached }
 // cat = the listing's leaf category ID (used to pick a category when drafting a listing)
 // basis "au_used" = Australian-located used listings (preferred); "all" = fallback to everything delivered to AU.
+//
+//   POST /claude/v1/messages   -> Claude Messages API, using the ANTHROPIC_API_KEY secret held here
+// The app's Anthropic SDK uses ${worker}/claude as its base URL. Only requests carrying the owner's device
+// passcode (X-App-Pass header, APP_PASS secret) are forwarded; models, parameters and beta headers are
+// allow-listed, and there is a per-minute limit (CLAUDE_LIMIT) and a daily cap (UsageCounter, CLAUDE_DAILY_CAP).
+
+import { DurableObject } from "cloudflare:workers";
 
 const MARKETPLACE = "EBAY_AU";
 const COUNTRY = "AU";
@@ -35,14 +42,18 @@ function ipKey(ip) {
   return `${groups.slice(0, 4).map(g => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
 }
 
-function corsHeaders(origin) {
+function corsHeaders(origin, request) {
   const ok = origin && ALLOWED_ORIGINS.some(rx => rx.test(origin));
+  // The Anthropic SDK sends its own headers (anthropic-version, anthropic-beta, x-stainless-*), so a preflight
+  // is answered with the headers it asks for. Only allowed origins get a usable answer.
+  const asked = (request && request.headers.get("Access-Control-Request-Headers")) || "";
   return {
     "Access-Control-Allow-Origin": ok ? origin : "https://jamie671.github.io",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Expose-Headers": "Retry-After",
-    "Vary": "Origin"
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": ok && asked ? asked.slice(0, 2000) : "Content-Type",
+    "Access-Control-Expose-Headers": "Retry-After, retry-after-ms, x-should-retry, request-id",
+    "Access-Control-Max-Age": "600",
+    "Vary": "Origin, Access-Control-Request-Headers"
   };
 }
 
@@ -213,13 +224,95 @@ async function cachedJson(ctx, cacheKey, ttl, cors, produce) {
   return json({ ...result, cached: false }, 200, { ...cors, "Cache-Control": `public, max-age=${ttl}` });
 }
 
+// ---- Claude proxy (owner-only) ----
+const CLAUDE_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
+const CLAUDE_BODY_KEYS = new Set(["model", "max_tokens", "messages", "output_config", "fallbacks", "system", "thinking"]);
+const CLAUDE_BETAS = new Set(["server-side-fallback-2026-07-01"]);
+const CLAUDE_MAX_BYTES = 25 * 1024 * 1024;
+
+// One counter object for the whole app: requests per day (Australian eastern standard time, UTC+10).
+export class UsageCounter extends DurableObject {
+  async hit(cap) {
+    const day = new Date(Date.now() + 10 * 3600 * 1000).toISOString().slice(0, 10);
+    const cur = (await this.ctx.storage.get("usage")) || { day, n: 0 };
+    const n = cur.day === day ? cur.n : 0;
+    if (n >= cap) return { ok: false, n, day };
+    await this.ctx.storage.put("usage", { day, n: n + 1 });
+    return { ok: true, n: n + 1, day };
+  }
+}
+
+async function samePass(given, expected) {
+  const enc = new TextEncoder();
+  const a = enc.encode(given || ""), b = enc.encode(expected || "");
+  if (!b.length || a.length !== b.length) return false;
+  return crypto.subtle.timingSafeEqual(a, b);
+}
+
+// Errors in the Messages API's own shape, so the SDK in the app raises its usual error classes
+function claudeError(status, type, message, cors, extra) {
+  return json({ type: "error", error: { type, message } }, status, { ...cors, ...extra });
+}
+
+async function claudeProxy(request, env, ctx, cors) {
+  if (request.method !== "POST") return claudeError(405, "invalid_request_error", "Use POST", cors);
+  if (!env.ANTHROPIC_API_KEY || !env.APP_PASS || !env.CLAUDE_LIMIT || !env.CLAUDE_USAGE) {
+    console.error("Claude proxy is not configured (ANTHROPIC_API_KEY / APP_PASS secrets, CLAUDE_LIMIT, CLAUDE_USAGE)");
+    return claudeError(503, "api_error", "Claude isn't set up on the Worker yet", cors, { "x-should-retry": "false" });
+  }
+  if (!(await samePass(request.headers.get("X-App-Pass"), env.APP_PASS)))
+    return claudeError(401, "authentication_error", "This device isn't unlocked for Claude", cors);
+
+  const len = parseInt(request.headers.get("Content-Length") || "0", 10);
+  if (len > CLAUDE_MAX_BYTES) return claudeError(413, "request_too_large", "Request too large", cors);
+  let body;
+  try { body = await request.json(); } catch (e) { return claudeError(400, "invalid_request_error", "Body must be JSON", cors); }
+  const extraKeys = Object.keys(body || {}).filter(k => !CLAUDE_BODY_KEYS.has(k));
+  if (extraKeys.length) return claudeError(400, "invalid_request_error", `Not allowed through this proxy: ${extraKeys.join(", ")}`, cors);
+  if (!CLAUDE_MODELS.includes(body.model)) return claudeError(400, "invalid_request_error", "Model not allowed", cors);
+  if (!(body.max_tokens > 0 && body.max_tokens <= 16000)) return claudeError(400, "invalid_request_error", "max_tokens must be 1-16000", cors);
+  const betas = (request.headers.get("anthropic-beta") || "").split(",").map(b => b.trim()).filter(Boolean);
+  if (betas.some(b => !CLAUDE_BETAS.has(b))) return claudeError(400, "invalid_request_error", "Beta not allowed", cors);
+
+  const { success } = await env.CLAUDE_LIMIT.limit({ key: "owner" });
+  if (!success) return claudeError(429, "rate_limit_error", "Too many Claude requests this minute. Wait a moment", cors, { "Retry-After": "20" });
+  const cap = parseInt(env.CLAUDE_DAILY_CAP || "200", 10) || 200;
+  const usage = await env.CLAUDE_USAGE.get(env.CLAUDE_USAGE.idFromName("owner")).hit(cap);
+  if (!usage.ok) return claudeError(429, "rate_limit_error", `Daily Claude limit of ${cap} reads reached. It resets at midnight (AEST)`, cors, { "x-should-retry": "false" });
+
+  const headers = {
+    "content-type": "application/json",
+    "anthropic-version": request.headers.get("anthropic-version") || "2026-10-21",
+    "authorization": `Bearer ${env.ANTHROPIC_API_KEY}`
+  };
+  if (betas.length) headers["anthropic-beta"] = betas.join(",");
+  let upstream;
+  try {
+    upstream = await fetch(`${env.ANTHROPIC_BASE_URL || "https://api.anthropic.com"}/v1/messages`, { method: "POST", headers, body: JSON.stringify(body) });
+  } catch (err) {
+    console.error("Claude upstream unreachable:", err && err.message ? err.message : err);
+    return claudeError(502, "api_error", "Couldn't reach Claude", cors);
+  }
+  if (!upstream.ok) console.error(`Claude upstream ${upstream.status} (request-id ${upstream.headers.get("request-id") || "-"})`);
+  // A 401/403 from Anthropic is about the Worker's key, not the device: don't let the app think its passcode is wrong
+  if (upstream.status === 401 || upstream.status === 403)
+    return claudeError(502, "api_error", "The Worker's Claude API key was rejected. Update the ANTHROPIC_API_KEY secret", cors, { "x-should-retry": "false" });
+  const out = new Headers(cors);
+  for (const h of ["content-type", "request-id", "retry-after", "retry-after-ms", "x-should-retry"]) {
+    const v = upstream.headers.get(h);
+    if (v) out.set(h, v);
+  }
+  return new Response(upstream.body, { status: upstream.status, headers: out });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const origin = request.headers.get("Origin") || "";
-    const cors = corsHeaders(origin);
+    const cors = corsHeaders(origin, request);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     const url = new URL(request.url);
     if (url.pathname === "/" || url.pathname === "/health") return json({ ok: true, service: "cex-ebay-proxy" }, 200, cors);
+    if (url.pathname === "/claude/v1/messages") return claudeProxy(request, env, ctx, cors);
     const ROUTES = ["/ebay/search", "/ebay/category", "/ebay/aspects"];
     if (!ROUTES.includes(url.pathname)) return json({ error: "Not found" }, 404, cors);
     if (!env.EBAY_APP_ID || !env.EBAY_CERT_ID) {

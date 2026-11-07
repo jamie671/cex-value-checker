@@ -4,10 +4,21 @@
   "main": "src/index.js",
   "compatibility_date": "2026-09-01",
   "observability": { "enabled": true },
-  // Per-IP cap on uncached /ebay/search lookups (read as env.SEARCH_LIMIT; the Worker refuses to run without it).
   // namespace_id is unique per rate limiter in the account.
   "ratelimits": [
-    { "name": "SEARCH_LIMIT", "namespace_id": "2610264", "simple": { "limit": 30, "period": 60 } }
-  ]
-  // Secrets (set with `npx wrangler secret put`): EBAY_APP_ID, EBAY_CERT_ID
+    // Per-IP cap on uncached eBay lookups (env.SEARCH_LIMIT; the Worker refuses to run without it).
+    { "name": "SEARCH_LIMIT", "namespace_id": "2610264", "simple": { "limit": 30, "period": 60 } },
+    // Claude reads per minute through /claude (env.CLAUDE_LIMIT).
+    { "name": "CLAUDE_LIMIT", "namespace_id": "2610265", "simple": { "limit": 20, "period": 60 } }
+  ],
+  // Daily Claude cap: one counter object, created automatically on deploy (SQLite-backed Durable Object).
+  "durable_objects": {
+    "bindings": [{ "name": "CLAUDE_USAGE", "class_name": "UsageCounter" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UsageCounter"] }],
+  "vars": {
+    // Most Claude reads per day (resets at midnight AEST). Roughly 10c each on Opus.
+    "CLAUDE_DAILY_CAP": "200"
+  }
+  // Secrets (set with `npx wrangler secret put`): EBAY_APP_ID, EBAY_CERT_ID, ANTHROPIC_API_KEY, APP_PASS
 }

@@ -413,21 +413,22 @@
     let displayLimit = 40;
     let html5QrCode = null;
 
-    // One-tap AI Vision setup: open the app once with ?claude_key=sk-ant-... on a device and the key is
-    // saved to this browser, AI Vision becomes the default scanner, and the key is removed from the URL.
+    // One-time device unlock: open the app once with ?unlock=<passcode> (the APP_PASS secret on the Worker) and
+    // this device can use Claude through the Worker from then on. The Claude API key itself stays on the Worker.
     function applyKeyFromUrl() {
       try {
+        localStorage.removeItem("claude_api_key");   // older builds kept a raw API key on the device
         const params = new URLSearchParams(window.location.search);
-        const key = (params.get("claude_key") || "").trim();
-        if (!key) return;
-        localStorage.setItem("claude_api_key", key);
+        const pass = (params.get("unlock") || "").trim();
+        if (!pass) return;
+        localStorage.setItem("app_pass", pass);
         localStorage.setItem("bulk_scanner_mode", "ai");
-        params.delete("claude_key");
+        params.delete("unlock");
         const clean = window.location.pathname + (params.toString() ? "?" + params.toString() : "") + window.location.hash;
         history.replaceState(null, "", clean);
-        setTimeout(() => alert("AI Vision key saved on this device. Open Bulk Profit Evaluator and take a photo."), 300);
+        setTimeout(() => alert("Claude is set up on this device. Photos will be read automatically."), 300);
       } catch (e) {
-        console.warn("Could not apply key from URL:", e);
+        console.warn("Could not apply the unlock link:", e);
       }
     }
 
@@ -1620,25 +1621,13 @@
             </details>
           </div>
 
-          <!-- Claude API key + model (Shown only in AI Vision Mode) -->
+          <!-- Claude status + model (Shown only in AI Vision Mode) -->
           <div id="bulkAiKeyWrap" class="hidden bg-purple-950/20 border border-purple-800/40 rounded-xl p-2.5 space-y-1.5 text-xs">
-            <div class="flex items-center justify-between">
-              <span class="font-bold text-purple-300 flex items-center gap-1">
-                <i data-lucide="key" class="w-3.5 h-3.5 text-purple-400"></i>
-                Claude API key:
-              </span>
-              <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener" class="text-purple-400 hover:text-purple-300 font-bold underline text-[10px] flex items-center gap-0.5">
-                <span>Get a key</span>
-                <i data-lucide="external-link" class="w-2.5 h-2.5"></i>
-              </a>
-            </div>
-            <input type="password" id="bulkClaudeApiKey" placeholder="sk-ant-..." autocomplete="off"
-                   class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500"
-                   onchange="saveClaudeSettings(this.value, null)">
+            <div id="bulkClaudeStatus" class="text-[11px]"></div>
             <label class="flex items-center justify-between gap-2 text-[10px] text-slate-400">Model
-              <select id="bulkClaudeModel" onchange="saveClaudeSettings(null, this.value)" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white font-semibold focus:outline-none focus:border-purple-500"></select>
+              <select id="bulkClaudeModel" onchange="saveClaudeSettings(this.value)" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white font-semibold focus:outline-none focus:border-purple-500"></select>
             </label>
-            <p class="text-[10px] text-slate-400">Pay-as-you-go from your Claude Console account (separate from a Claude Pro/Max subscription). Roughly 4c a shelf photo on Opus, well under 1c on Haiku. The key stays on this device and is only sent to Anthropic.</p>
+            <p class="text-[10px] text-slate-400">Roughly 4c a shelf photo on Opus, well under 1c on Haiku, from your Claude Console account.</p>
           </div>
 
           <!-- Action Buttons: Take Photo & Library -->
@@ -2127,20 +2116,39 @@
       { id: "claude-sonnet-5-5", label: "Sonnet 5.5 · about half the price" },
       { id: "claude-haiku-5-5", label: "Haiku 5.5 · cheapest" }
     ];
-    function claudeKey() { try { return (localStorage.getItem("claude_api_key") || "").trim(); } catch (e) { return ""; } }
+    // Claude runs through the Worker (/claude), which holds the API key; this device only keeps the unlock passcode
+    function claudePass() { try { return (localStorage.getItem("app_pass") || "").trim(); } catch (e) { return ""; } }
+    const CLAUDE_NOT_SET_UP = "Claude isn't set up on this device yet. Open your setup link (the one ending in ?unlock=...) on it once";
+    // Fallback for the iPhone Home Screen app: a tapped link opens in Safari, whose storage the Home Screen app
+    // doesn't share, so the passcode can also be pasted here once.
+    function unlockBoxHtml(where) {
+      return `<div class="flex gap-2 mt-1.5"><input id="unlockPass_${where}" type="password" autocomplete="off" placeholder="Or paste the passcode here" class="flex-1 min-w-0 px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"><button type="button" onclick="unlockFromBox('${where}')" class="px-3 rounded-lg bg-emerald-600 text-white text-xs font-bold shrink-0">Unlock</button></div>`;
+    }
+    function unlockFromBox(where) {
+      const v = (document.getElementById(`unlockPass_${where}`)?.value || "").trim();
+      if (!v) return;
+      try { localStorage.setItem("app_pass", v); } catch (e) {}
+      fillClaudeModelSelects();
+      if (typeof renderDraftEditor === "function" && currentDraftId) renderDraftEditor();
+    }
+    function claudeStatusHtml() {
+      return claudePass()
+        ? `<span class="text-emerald-300 font-bold">✓ Claude is set up on this device</span>`
+        : `<span class="text-amber-300 font-semibold">${CLAUDE_NOT_SET_UP}.</span>${unlockBoxHtml("bulk")}`;
+    }
     function claudeModel() {
       let m = null; try { m = localStorage.getItem("claude_model"); } catch (e) {}
       return CLAUDE_MODELS.some(x => x.id === m) ? m : "claude-opus-5-5";
     }
-    function saveClaudeSettings(key, model) {
-      try {
-        if (key != null && key.trim()) localStorage.setItem("claude_api_key", key.trim());
-        if (model && CLAUDE_MODELS.some(x => x.id === model)) localStorage.setItem("claude_model", model);
-      } catch (e) {}
+    function saveClaudeSettings(model) {
+      try { if (model && CLAUDE_MODELS.some(x => x.id === model)) localStorage.setItem("claude_model", model); } catch (e) {}
       fillClaudeModelSelects();
     }
     function claudeModelOptions() { const cur = claudeModel(); return CLAUDE_MODELS.map(m => `<option value="${m.id}" ${m.id === cur ? "selected" : ""}>${m.label}</option>`).join(""); }
-    function fillClaudeModelSelects() { document.querySelectorAll("#bulkClaudeModel, #draftClaudeModel").forEach(el => { el.innerHTML = claudeModelOptions(); }); }
+    function fillClaudeModelSelects() {
+      document.querySelectorAll("#bulkClaudeModel, #draftClaudeModel").forEach(el => { el.innerHTML = claudeModelOptions(); });
+      const st = document.getElementById("bulkClaudeStatus"); if (st) st.innerHTML = claudeStatusHtml();
+    }
     // The official Anthropic TypeScript SDK, bundled for the browser in vendor/ (see vendor/README.md).
     // Loaded on first use, so the page doesn't pay for it until someone reads a photo with Claude.
     let anthropicSdkPromise = null;
@@ -2150,20 +2158,21 @@
       catch (e) { anthropicSdkPromise = null; console.error(e); throw new Error("Couldn't load the Claude library. Check your connection and reload the page"); }
     }
     function claudeErrorText(e, A) {
-      if (e instanceof A.AuthenticationError) return "Your Claude API key was rejected. Check it and paste it again";
-      if (e instanceof A.PermissionDeniedError) return "This Claude API key isn't allowed to use that model";
-      if (e instanceof A.RateLimitError) return "Claude is rate-limiting this key. Wait a minute and try again";
-      if (e instanceof A.BadRequestError) return `Claude couldn't take the request: ${e.message}`;
+      const said = (e && e.error && e.error.error && e.error.error.message) || (e && e.message) || String(e);
+      if (e instanceof A.AuthenticationError) return "This device isn't unlocked for Claude (or the passcode was changed). Open your setup link on it again";
+      if (e instanceof A.RateLimitError) return said;                 // per-minute limit or the daily cap, from the Worker
       if (e instanceof A.APIConnectionError) return "Couldn't reach Claude. Check your connection";
-      if (e instanceof A.APIError) return `Claude error${e.status ? " " + e.status : ""}: ${e.message}`;
-      return (e && e.message) || String(e);
+      if (e instanceof A.BadRequestError) return `Claude couldn't take the request: ${said}`;
+      if (e instanceof A.APIError) return `Claude error${e.status ? " " + e.status : ""}: ${said}`;
+      return said;
     }
     // Send JPEG images (base64) + instructions; the reply is JSON matching `schema` (structured outputs).
     async function claudeVision(imagesB64, prompt, schema) {
       const A = await anthropicSdk();
-      const key = claudeKey();
-      if (!key) throw new Error("Add your Claude API key first");
-      const client = new A({ apiKey: key, dangerouslyAllowBrowser: true });
+      const pass = claudePass();
+      if (!pass) throw new Error(CLAUDE_NOT_SET_UP);
+      // The Worker swaps in the real API key; the SDK still needs a placeholder for its own auth header
+      const client = new A({ apiKey: "held-by-worker", baseURL: `${EBAY_PROXY_URL}/claude`, defaultHeaders: { "X-App-Pass": pass }, dangerouslyAllowBrowser: true });
       const model = claudeModel();
       const params = {
         model,
@@ -2651,13 +2660,10 @@
 
       // Check current engine mode
       const currentMode = localStorage.getItem("bulk_scanner_mode") || "local";
-      const typedKey = (document.getElementById("bulkClaudeApiKey")?.value || "").trim();
-
       if (currentMode === "ai") {
-        if (typedKey) saveClaudeSettings(typedKey, null);
-        if (!claudeKey()) {
+        if (!claudePass()) {
           statusBox.classList.remove("hidden");
-          statusText.innerHTML = `<span class="text-amber-400 font-semibold">Paste your Claude API key above to use AI Vision.</span>`;
+          statusText.innerHTML = `<span class="text-amber-400 font-semibold">${CLAUDE_NOT_SET_UP}, or switch to On-Device.</span>`;
           return;
         }
         statusBox.classList.remove("hidden");
@@ -2710,9 +2716,6 @@
       document.getElementById("lotModal").classList.remove("hidden");
       setLotMode(lotState.mode || "games");
       loadLotSettingsUI();
-      const savedKey = claudeKey();
-      const keyInput = document.getElementById("bulkClaudeApiKey");
-      if (keyInput && savedKey) keyInput.value = savedKey;
       fillClaudeModelSelects();
       const savedMode = localStorage.getItem("bulk_scanner_mode") || "local";
       setBulkScannerMode(savedMode);
@@ -3587,8 +3590,8 @@
       d.updated = Date.now();
       saveDrafts(true);
       renderDraftEditor();
-      // A brand-new photo draft goes straight to the AI read when a Claude key is saved
-      if (fresh && d.photos.length && claudeKey()) aiReadDraft(d.id);
+      // A brand-new photo draft goes straight to the AI read when this device is set up for Claude
+      if (fresh && d.photos.length && claudePass()) aiReadDraft(d.id);
     }
     function addDraftPhotos() { document.getElementById("draftPhotoInput").click(); }
     async function removeDraftPhoto(id, pid) {
@@ -3883,7 +3886,7 @@
     }
     async function aiReadDraft(id, hint) {
       const d = getDraft(id); if (!d) return;
-      if (!claudeKey()) { renderDraftEditor(); document.getElementById("draftClaudeKey")?.focus(); return; }
+      if (!claudePass()) { alert(CLAUDE_NOT_SET_UP + "."); return; }
       if (!d.photos.length) return alert("Add a photo of the item first.");
       draftBusy[id] = hint ? `Reading the photos again as "${hint}"…` : "Reading the photos…";
       renderDraftEditor();
@@ -3950,13 +3953,6 @@ Fill in the listing:
         saveDrafts(true);
         renderDraftEditor();
       }
-    }
-    function saveDraftClaudeKey() {
-      const v = (document.getElementById("draftClaudeKey")?.value || "").trim();
-      if (!v) return;
-      saveClaudeSettings(v, document.getElementById("draftClaudeModel")?.value || null);
-      const d = getDraft(currentDraftId);
-      if (d && d.photos.length) aiReadDraft(d.id); else renderDraftEditor();
     }
     function aiNotIt(id) {
       const hint = (document.getElementById("draftNotIt")?.value || "").trim();
@@ -4293,7 +4289,7 @@ Fill in the listing:
       document.getElementById("listingsTitle").innerText = d.title ? "Edit draft" : "New draft";
       document.getElementById("listingsSubtitle").innerText = d.source === "lot" ? "From your bulk lot. Price and cost are filled in." : d.source === "barcode" ? `From barcode ${d.gtin}` : "Add photos, let AI fill it in, then check it.";
       const id = d.id, busy = draftBusy[id];
-      const hasKey = !!claudeKey();
+      const hasKey = !!claudePass();
       const asp = aspectsMemo[d.categoryId];
       const conds = (asp && asp.conditions && asp.conditions.length) ? asp.conditions : (d.mode === "books" ? DEFAULT_CONDITIONS.books : DEFAULT_CONDITIONS.other);
       const inputCls = "w-full px-2.5 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -4314,15 +4310,10 @@ Fill in the listing:
           </div>
         </div>`).join("");
       const aiBlock = !d.photos.length ? "" : !hasKey ? `
-        <div class="bg-slate-900 border border-slate-700 rounded-xl p-2.5 space-y-1.5">
-          <div class="text-[11px] text-slate-300">Let Claude fill in the listing from the photos: paste a Claude API key (<a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener" class="text-blue-300 underline">get one here</a>). It's saved on this device and only sent to Anthropic.</div>
-          <div class="flex gap-2"><input id="draftClaudeKey" type="password" autocomplete="off" placeholder="sk-ant-…" class="${inputCls}"><button type="button" onclick="saveDraftClaudeKey()" class="px-3 rounded-lg bg-emerald-600 text-white text-xs font-bold">Save</button></div>
-          <label class="flex items-center justify-between gap-2 text-[10px] text-slate-400">Model <select id="draftClaudeModel" class="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white">${claudeModelOptions()}</select></label>
-          <div class="text-[10px] text-slate-500">Pay-as-you-go: roughly 10c a read on Opus, 5c on Sonnet, under 1c on Haiku.</div>
-        </div>` : `
+        <div class="bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-[11px] text-amber-300">${CLAUDE_NOT_SET_UP}. Until then, fill the details in by hand.${unlockBoxHtml("draft")}</div>` : `
         <div class="flex items-center gap-2 flex-wrap">
           <button type="button" onclick="aiReadDraft('${id}')" ${busy ? "disabled" : ""} class="px-3 py-2 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold flex items-center gap-1.5 disabled:opacity-50"><i data-lucide="sparkles" class="w-3.5 h-3.5"></i>${d.aiIdentified ? "Read photos again" : "Read my photos"}</button>
-          <select id="draftClaudeModel" onchange="saveClaudeSettings(null, this.value)" title="Claude model" class="bg-slate-950 border border-slate-700 rounded-lg px-1.5 py-1.5 text-[10px] text-slate-300">${claudeModelOptions()}</select>
+          <select id="draftClaudeModel" onchange="saveClaudeSettings(this.value)" title="Claude model" class="bg-slate-950 border border-slate-700 rounded-lg px-1.5 py-1.5 text-[10px] text-slate-300">${claudeModelOptions()}</select>
           ${d.aiIdentified ? `<span class="text-[11px] text-slate-300">We think this is <b class="text-white">${escapeHtml(d.aiIdentified)}</b>${d.aiConfidence != null ? ` <span class="text-slate-500">(${Math.round(d.aiConfidence * 100)}%)</span>` : ""}</span>` : `<span class="text-[10px] text-slate-500">Reads the first ${AI_PHOTOS} photos. Put the clearest shot of the front, labels and model number first.</span>`}
         </div>
         ${d.aiIdentified ? `<div class="flex gap-2"><input id="draftNotIt" placeholder="Not it? Say what it is, e.g. Sled Storm PS2" class="${inputCls}" onkeydown="if(event.key==='Enter') aiNotIt('${id}')"><button type="button" onclick="aiNotIt('${id}')" class="px-3 rounded-lg bg-slate-800 border border-slate-700 text-white text-[11px] font-bold shrink-0">Read again</button></div>` : ""}`;
