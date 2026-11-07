@@ -3737,10 +3737,17 @@
         }
       }
       const conds = asp.conditions && asp.conditions.length ? asp.conditions : null;
-      if (conds && !conds.some(c => c.id === d.condition)) {
-        const used = conds.find(c => /^used$/i.test(c.name)) || conds.find(c => /good|used/i.test(c.name)) || conds[0];
-        d.condition = used.id;
-      }
+      if (conds && !conds.some(c => c.id === d.condition)) d.condition = nearestCondition(d.condition, conds);
+    }
+    // Map a condition onto the grades this category allows. eBay AU video games, for example, have no plain
+    // "Used" (3000): only Brand new / Like new / Very good / Good / Acceptable. A used item defaults to the
+    // middle grade "Good" rather than overstating it; the seller can raise it.
+    function nearestCondition(id, conds) {
+      const by = (rx) => conds.find(c => rx.test(c.name));
+      const pick = id === "1000" ? (conds.find(c => c.id === "1000") || by(/new/i))
+        : id === "7000" ? (by(/parts|not working/i) || by(/acceptable/i))
+        : (by(/^used$/i) || by(/^good$/i) || by(/good/i) || by(/used/i));
+      return (pick || conds[0]).id;
     }
     async function ensureCategory(d, force) {
       if (d.categoryId && !force) { await loadAspects(d.categoryId); reconcileDraft(d); return; }
@@ -3886,6 +3893,8 @@
         await ensureCategory(d);
         const names = draftSpecNames(d);
         const known = [d.cexName && `CeX lists it as "${d.cexName}"`, d.gtin && `barcode ${d.gtin}`, d.userEdited.title && d.title && `the seller's title is "${d.title}"`].filter(Boolean).join("; ");
+        const condList = ((aspectsMemo[d.categoryId] || {}).conditions || []).map(c => c.name).filter(Boolean);
+        const condNames = condList.length ? condList : null;   // null = category grades unknown, use new/used/parts
         const what = LIST_MODES[d.mode].replace(/^\S+\s/, "").toLowerCase();
         const prompt = `You are helping an Australian eBay seller list a second-hand ${what}. The photos show the item.
 ${known ? `Known so far: ${known}.\n` : ""}${hint ? `The seller says this item is: "${hint}". Trust that over your own reading of the photos.\n` : ""}
@@ -3894,10 +3903,11 @@ Fill in the listing:
 - title: an eBay title of at most 80 characters, using the words buyers search for (name, platform or format, edition, PAL/region if shown). No emojis, no ALL CAPS, no "L@@K", nothing the photos don't show.
 - searchQuery: 2-6 words that would find the same item on eBay.
 - specifics: values for any of these eBay item specifics that the photos, or general knowledge of this exact item, make clear: ${names.join(", ")}. Leave out any you are unsure of.
-- condition: "new" only if sealed or unused, "parts" if visibly broken, otherwise "used".
+- condition: ${condNames ? `the eBay grade that matches what the photos show: one of ${condNames.join(", ")}. Only a new grade if it is sealed or unused; if you can't judge the wear, pick the middle grade.` : `"new" only if sealed or unused, "parts" if visibly broken, otherwise "used".`}
 - conditionNote: one sentence on visible wear and what is included or missing (case, manual, disc, pieces). Never claim it was tested.
 - description: 3-6 short plain-text lines: what it is, what is included, its condition. No postage, returns or payment text.`;
         const specName = names.length ? { type: "string", enum: names } : { type: "string" };
+        const catConds = (aspectsMemo[d.categoryId] || {}).conditions || [];
         const r = await claudeVision(imgs, prompt, {
           type: "object", additionalProperties: false,
           required: ["identified", "confidence", "title", "searchQuery", "specifics", "condition", "conditionNote", "description"],
@@ -3907,7 +3917,7 @@ Fill in the listing:
             title: { type: "string", description: "At most 80 characters" },
             searchQuery: { type: "string" },
             specifics: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: specName, value: { type: "string" } } } },
-            condition: { type: "string", enum: ["new", "used", "parts"] },
+            condition: { type: "string", enum: condNames || ["new", "used", "parts"] },
             conditionNote: { type: "string" },
             description: { type: "string" }
           }
@@ -3920,7 +3930,8 @@ Fill in the listing:
         if (r.description && !ue.description) d.description = String(r.description).trim();
         if (r.conditionNote && !ue.conditionNote) d.conditionNote = String(r.conditionNote).trim().slice(0, 1000);
         const cond = String(r.condition || "").toLowerCase();
-        if (cond && !ue.condition) d.condition = cond === "new" ? "1000" : cond === "parts" ? "7000" : (d.mode === "books" ? "5000" : "3000");
+        const graded = catConds.find(c => c.name.toLowerCase() === cond);   // enum case isn't guaranteed
+        if (cond && !ue.condition) d.condition = graded ? graded.id : cond === "new" ? "1000" : cond === "parts" ? "7000" : (d.mode === "books" ? "5000" : "3000");
         const specPairs = (r.specifics || []).map(x => [names.find(n => n.toLowerCase() === String(x.name || "").toLowerCase()) || x.name, x.value]);
         for (const [k, v] of specPairs) {
           const val = Array.isArray(v) ? v.join(", ") : String(v ?? "").trim();
