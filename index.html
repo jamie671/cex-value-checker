@@ -413,16 +413,16 @@
     let displayLimit = 40;
     let html5QrCode = null;
 
-    // One-tap AI Vision setup: open the app once with ?gemini_key=AIza... on a device and the key is
+    // One-tap AI Vision setup: open the app once with ?claude_key=sk-ant-... on a device and the key is
     // saved to this browser, AI Vision becomes the default scanner, and the key is removed from the URL.
     function applyKeyFromUrl() {
       try {
         const params = new URLSearchParams(window.location.search);
-        const key = (params.get("gemini_key") || "").trim();
+        const key = (params.get("claude_key") || "").trim();
         if (!key) return;
-        localStorage.setItem("bulk_gemini_key", key);
+        localStorage.setItem("claude_api_key", key);
         localStorage.setItem("bulk_scanner_mode", "ai");
-        params.delete("gemini_key");
+        params.delete("claude_key");
         const clean = window.location.pathname + (params.toString() ? "?" + params.toString() : "") + window.location.hash;
         history.replaceState(null, "", clean);
         setTimeout(() => alert("AI Vision key saved on this device. Open Bulk Profit Evaluator and take a photo."), 300);
@@ -1600,7 +1600,7 @@
               </button>
               <button type="button" id="btnEngineAi" onclick="setBulkScannerMode('ai')"
                       class="px-2.5 py-1 rounded-lg font-bold text-slate-400 hover:text-white transition">
-                ✨ AI Vision (Best · Free Key)
+                ✨ AI Vision (Best · Claude)
               </button>
             </div>
             
@@ -1620,22 +1620,25 @@
             </details>
           </div>
 
-          <!-- Free Gemini API Key Input (Shown only in AI Vision Mode) -->
+          <!-- Claude API key + model (Shown only in AI Vision Mode) -->
           <div id="bulkAiKeyWrap" class="hidden bg-purple-950/20 border border-purple-800/40 rounded-xl p-2.5 space-y-1.5 text-xs">
             <div class="flex items-center justify-between">
               <span class="font-bold text-purple-300 flex items-center gap-1">
                 <i data-lucide="key" class="w-3.5 h-3.5 text-purple-400"></i>
-                Google Gemini API Key (100% Free):
+                Claude API key:
               </span>
-              <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-purple-400 hover:text-purple-300 font-bold underline text-[10px] flex items-center gap-0.5">
-                <span>Get Free Key</span>
+              <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener" class="text-purple-400 hover:text-purple-300 font-bold underline text-[10px] flex items-center gap-0.5">
+                <span>Get a key</span>
                 <i data-lucide="external-link" class="w-2.5 h-2.5"></i>
               </a>
             </div>
-            <input type="password" id="bulkGeminiApiKey" placeholder="AIzaSy..." 
+            <input type="password" id="bulkClaudeApiKey" placeholder="sk-ant-..." autocomplete="off"
                    class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500"
-                   onchange="localStorage.setItem('bulk_gemini_key', this.value.trim())">
-            <p class="text-[10px] text-slate-400">Takes 15 seconds to create with any Google account. 100% free with no credit card required.</p>
+                   onchange="saveClaudeSettings(this.value, null)">
+            <label class="flex items-center justify-between gap-2 text-[10px] text-slate-400">Model
+              <select id="bulkClaudeModel" onchange="saveClaudeSettings(null, this.value)" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white font-semibold focus:outline-none focus:border-purple-500"></select>
+            </label>
+            <p class="text-[10px] text-slate-400">Pay-as-you-go from your Claude Console account (separate from a Claude Pro/Max subscription). Roughly 4c a shelf photo on Opus, well under 1c on Haiku. The key stays on this device and is only sent to Anthropic.</p>
           </div>
 
           <!-- Action Buttons: Take Photo & Library -->
@@ -2118,42 +2121,84 @@
       return dataUrl.split(",")[1];
     }
 
-    // Gemini model candidates, newest/cheapest first. gemini-2.0-flash was shut down on 1 June 2026,
-    // so we walk this list and fall back when a model ID is retired or unavailable for the key.
-    const GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
-
-    async function callGeminiVision(base64Data, apiKey, mimeType = "image/jpeg") {
-      const prompt = `You are an expert video game appraiser. Examine this photo of game spines on a shelf or stacked flat. Extract every visible video game title and platform (e.g. 'The Orange Box Xbox 360', 'Tiger Woods PGA Tour 09 Xbox 360', 'Street Fighter IV Xbox 360', 'Half-Life 2 Xbox', 'Just Cause 2 Xbox 360', 'MotoGP 3 PS2', 'Spider-Man PS4', 'Grand Theft Auto V PS4'). Read left to right. If a spine is partly hidden, give your best guess at the title. Output ONLY the cleaned titles with platform, one title per line. No numbers, no bullet points, no extra text.`;
-
-      return geminiGenerate([{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Data } }], apiKey, { temperature: 0.1, maxOutputTokens: 2048 });
+    // ---- Claude API: the user's own key, called straight from the browser with the Anthropic SDK ----
+    const CLAUDE_MODELS = [
+      { id: "claude-opus-5-5", label: "Opus 5.5 · most accurate" },
+      { id: "claude-sonnet-5-5", label: "Sonnet 5.5 · about half the price" },
+      { id: "claude-haiku-5-5", label: "Haiku 5.5 · cheapest" }
+    ];
+    function claudeKey() { try { return (localStorage.getItem("claude_api_key") || "").trim(); } catch (e) { return ""; } }
+    function claudeModel() {
+      let m = null; try { m = localStorage.getItem("claude_model"); } catch (e) {}
+      return CLAUDE_MODELS.some(x => x.id === m) ? m : "claude-opus-5-5";
+    }
+    function saveClaudeSettings(key, model) {
+      try {
+        if (key != null && key.trim()) localStorage.setItem("claude_api_key", key.trim());
+        if (model && CLAUDE_MODELS.some(x => x.id === model)) localStorage.setItem("claude_model", model);
+      } catch (e) {}
+      fillClaudeModelSelects();
+    }
+    function claudeModelOptions() { const cur = claudeModel(); return CLAUDE_MODELS.map(m => `<option value="${m.id}" ${m.id === cur ? "selected" : ""}>${m.label}</option>`).join(""); }
+    function fillClaudeModelSelects() { document.querySelectorAll("#bulkClaudeModel, #draftClaudeModel").forEach(el => { el.innerHTML = claudeModelOptions(); }); }
+    // The official Anthropic TypeScript SDK, bundled for the browser in vendor/ (see vendor/README.md).
+    // Loaded on first use, so the page doesn't pay for it until someone reads a photo with Claude.
+    let anthropicSdkPromise = null;
+    async function anthropicSdk() {
+      if (!anthropicSdkPromise) anthropicSdkPromise = import("./vendor/anthropic-sdk-1.3.0.min.js").then(m => m.default);
+      try { return await anthropicSdkPromise; }
+      catch (e) { anthropicSdkPromise = null; console.error(e); throw new Error("Couldn't load the Claude library. Check your connection and reload the page"); }
+    }
+    function claudeErrorText(e, A) {
+      if (e instanceof A.AuthenticationError) return "Your Claude API key was rejected. Check it and paste it again";
+      if (e instanceof A.PermissionDeniedError) return "This Claude API key isn't allowed to use that model";
+      if (e instanceof A.RateLimitError) return "Claude is rate-limiting this key. Wait a minute and try again";
+      if (e instanceof A.BadRequestError) return `Claude couldn't take the request: ${e.message}`;
+      if (e instanceof A.APIConnectionError) return "Couldn't reach Claude. Check your connection";
+      if (e instanceof A.APIError) return `Claude error${e.status ? " " + e.status : ""}: ${e.message}`;
+      return (e && e.message) || String(e);
+    }
+    // Send JPEG images (base64) + instructions; the reply is JSON matching `schema` (structured outputs).
+    async function claudeVision(imagesB64, prompt, schema) {
+      const A = await anthropicSdk();
+      const key = claudeKey();
+      if (!key) throw new Error("Add your Claude API key first");
+      const client = new A({ apiKey: key, dangerouslyAllowBrowser: true });
+      const model = claudeModel();
+      const params = {
+        model,
+        max_tokens: 16000,
+        output_config: { effort: "medium", format: { type: "json_schema", schema } },
+        messages: [{ role: "user", content: [
+          ...imagesB64.map(data => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } })),
+          { type: "text", text: prompt }
+        ] }]
+      };
+      let resp;
+      try {
+        // Opus and Sonnet: if a safety classifier declines, the API re-runs the request on Anthropic's
+        // recommended fallback model (server-side fallback). Haiku has no server-side fallback.
+        resp = model === "claude-haiku-5-5"
+          ? await client.messages.create(params)
+          : await client.beta.messages.create({ ...params, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" });
+      } catch (e) {
+        console.error("Claude request failed", e);
+        throw new Error(claudeErrorText(e, A));
+      }
+      if (resp.stop_reason === "refusal") throw new Error("Claude declined to read this photo");
+      if (resp.stop_reason === "max_tokens") throw new Error("Claude's reply was cut off. Try again with fewer photos");
+      const text = resp.content.filter(b => b.type === "text").map(b => b.text).join("");
+      try { return JSON.parse(text); } catch (e) { throw new Error("Claude's reply wasn't readable. Try again"); }
     }
 
-    // One Gemini request (text + images in `parts`), walking GEMINI_MODELS past retired model IDs.
-    async function geminiGenerate(parts, apiKey, generationConfig) {
-      const payload = { contents: [{ parts }], generationConfig };
-      let lastErr = null;
-      for (const model of GEMINI_MODELS) {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
-        let resp;
-        try {
-          resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-        } catch (netErr) {
-          throw new Error("Network error reaching Gemini. Check your connection and try again.");
-        }
-        if (resp.ok) {
-          const data = await resp.json();
-          const parts = data?.candidates?.[0]?.content?.parts || [];
-          return parts.map(p => p.text || "").join("\n");
-        }
-        const errData = await resp.json().catch(() => ({}));
-        const msg = errData?.error?.message || `Gemini API error ${resp.status}: ${resp.statusText}`;
-        lastErr = new Error(msg);
-        // 404 = model retired/unknown, 400 with "not found"/"not supported" = same. Try the next model.
-        const retired = resp.status === 404 || /not found|not supported|deprecated|no longer available/i.test(msg);
-        if (!retired) throw lastErr;
-        console.warn(`Gemini model ${model} unavailable, trying next:`, msg);
-      }
-      throw lastErr || new Error("No Gemini model available.");
+    // Shelf / stack photo -> list of "Title Platform" lines
+    async function callClaudeShelfVision(base64Data) {
+      const prompt = `This photo shows video game, film or other media cases on a shelf or in a stack. Read every visible spine or cover and list each title with its platform or format, the way a buyer would search for it (for example "The Orange Box Xbox 360", "MotoGP 3 PS2", "Spider-Man PS4", "Inception Blu-ray"). Go left to right, top to bottom. If a spine is partly hidden, give your best reading of the title. One entry per case; leave out ratings, publishers, serial numbers and prices.`;
+      const out = await claudeVision([base64Data], prompt, {
+        type: "object", additionalProperties: false, required: ["titles"],
+        properties: { titles: { type: "array", items: { type: "string" }, description: "One entry per case: title then platform or format" } }
+      });
+      return (out.titles || []).map(t => String(t).trim()).filter(Boolean);
     }
 
     const COMMON_SPLITS = [
@@ -2606,25 +2651,25 @@
 
       // Check current engine mode
       const currentMode = localStorage.getItem("bulk_scanner_mode") || "local";
-      const geminiKey = (document.getElementById("bulkGeminiApiKey")?.value || localStorage.getItem("bulk_gemini_key") || "").trim();
+      const typedKey = (document.getElementById("bulkClaudeApiKey")?.value || "").trim();
 
       if (currentMode === "ai") {
-        if (!geminiKey) {
+        if (typedKey) saveClaudeSettings(typedKey, null);
+        if (!claudeKey()) {
           statusBox.classList.remove("hidden");
-          statusText.innerHTML = `<span class="text-amber-400 font-semibold">Please enter your free Google Gemini API key above to use AI Vision.</span>`;
+          statusText.innerHTML = `<span class="text-amber-400 font-semibold">Paste your Claude API key above to use AI Vision.</span>`;
           return;
         }
-        localStorage.setItem("bulk_gemini_key", geminiKey);
         statusBox.classList.remove("hidden");
-        statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Analyzing shelf spines with Gemini AI Vision...</span>`;
+        statusText.innerHTML = `<span class="animate-spin inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full"></span><span>Reading the spines with Claude...</span>`;
         percentText.innerText = "50%";
         progressBar.style.width = "50%";
 
         try {
-          const base64Data = await fileToJpegBase64(file);
-          const aiText = await callGeminiVision(base64Data, geminiKey, "image/jpeg");
-          const lines = aiText.split("\n")
-            .map(l => l.trim().replace(/^[\*\-\d\.\)\s]+/, '').replace(/^["']|["']$/g, '').trim())
+          // 2576px long edge = the most detail Claude's high-resolution vision uses; larger is downscaled anyway
+          const base64Data = await fileToJpegBase64(file, 2576, 0.9);
+          const lines = (await callClaudeShelfVision(base64Data))
+            .map(l => l.replace(/^[\*\-\d\.\)\s]+/, '').replace(/^["']|["']$/g, '').trim())
             .filter(l => l.length >= 3);
 
           if (lines.length > 0) {
@@ -2665,9 +2710,10 @@
       document.getElementById("lotModal").classList.remove("hidden");
       setLotMode(lotState.mode || "games");
       loadLotSettingsUI();
-      const savedKey = localStorage.getItem("bulk_gemini_key") || "";
-      const keyInput = document.getElementById("bulkGeminiApiKey");
+      const savedKey = claudeKey();
+      const keyInput = document.getElementById("bulkClaudeApiKey");
       if (keyInput && savedKey) keyInput.value = savedKey;
+      fillClaudeModelSelects();
       const savedMode = localStorage.getItem("bulk_scanner_mode") || "local";
       setBulkScannerMode(savedMode);
       if (window.lucide && lucide.createIcons) lucide.createIcons();
@@ -3541,8 +3587,8 @@
       d.updated = Date.now();
       saveDrafts(true);
       renderDraftEditor();
-      // A brand-new photo draft goes straight to the AI read when a Gemini key is saved
-      if (fresh && d.photos.length && localStorage.getItem("bulk_gemini_key")) aiReadDraft(d.id);
+      // A brand-new photo draft goes straight to the AI read when a Claude key is saved
+      if (fresh && d.photos.length && claudeKey()) aiReadDraft(d.id);
     }
     function addDraftPhotos() { document.getElementById("draftPhotoInput").click(); }
     async function removeDraftPhoto(id, pid) {
@@ -3816,55 +3862,67 @@
       return bits.join(" | ").slice(0, 50);
     }
 
-    // ---- AI read of the photos (Gemini, the user's own key) ----
+    // ---- AI read of the photos (Claude, the user's own key) ----
+    // Stored photos are already JPEG (max 1600px): send them as they are rather than compressing them twice
     async function photoBase64(pid) {
       const blob = await idbPhoto("get", pid);
       if (!blob) return null;
-      return fileToJpegBase64(blob, 1280, 0.85);
-    }
-    function parseJsonLoose(text) {
-      const t = (text || "").replace(/```(json)?/gi, "").trim();
-      try { return JSON.parse(t); } catch (e) {}
-      const m = t.match(/\{[\s\S]*\}/);
-      if (m) try { return JSON.parse(m[0]); } catch (e) {}
-      return null;
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(",")[1]);
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(blob);
+      });
     }
     async function aiReadDraft(id, hint) {
       const d = getDraft(id); if (!d) return;
-      const key = (localStorage.getItem("bulk_gemini_key") || "").trim();
-      if (!key) { renderDraftEditor(); document.getElementById("draftGeminiKey")?.focus(); return; }
+      if (!claudeKey()) { renderDraftEditor(); document.getElementById("draftClaudeKey")?.focus(); return; }
       if (!d.photos.length) return alert("Add a photo of the item first.");
       draftBusy[id] = hint ? `Reading the photos again as "${hint}"…` : "Reading the photos…";
       renderDraftEditor();
       try {
         const imgs = [];
-        for (const p of d.photos.slice(0, AI_PHOTOS)) { const b = await photoBase64(p.id); if (b) imgs.push({ inline_data: { mime_type: "image/jpeg", data: b } }); }
+        for (const p of d.photos.slice(0, AI_PHOTOS)) { const b = await photoBase64(p.id); if (b) imgs.push(b); }
         await ensureCategory(d);
         const names = draftSpecNames(d);
         const known = [d.cexName && `CeX lists it as "${d.cexName}"`, d.gtin && `barcode ${d.gtin}`, d.userEdited.title && d.title && `the seller's title is "${d.title}"`].filter(Boolean).join("; ");
-        const prompt = `You help an Australian eBay seller list a second-hand ${LIST_MODES[d.mode].replace(/^\S+\s/, "").toLowerCase()}. Look at the photos.
-${known ? `Known: ${known}.` : ""}${hint ? `\nThe seller says this item is: "${hint}". Trust that over your own guess.` : ""}
-Reply with JSON only:
-{"identified": "what the item is, short", "confidence": 0.0-1.0,
- "title": "eBay title, max 80 characters, words buyers search for: name, platform or format, edition, region (PAL) if shown. No emojis, no ALL CAPS, no L@@K, no claims the photos don't show",
- "searchQuery": "2-6 words to find the same item on eBay",
- "specifics": {${names.map(n => JSON.stringify(n) + ': "value"').join(", ")}},
- "condition": "new" (sealed/unused) | "used" | "parts" (visibly broken),
- "conditionNote": "one sentence: visible wear and what is included or missing (case, manual, disc, pieces). Never say it was tested",
- "description": "3-6 short lines of plain text: what it is, what is included, condition. No postage, returns or payment text"}
-Leave out any specific you can't tell from the photos or general knowledge of this exact item.`;
-        const text = await geminiGenerate([{ text: prompt }, ...imgs], key, { temperature: 0.2, maxOutputTokens: 8192, responseMimeType: "application/json" });
-        const r = parseJsonLoose(text);
-        if (!r) throw new Error("The AI reply wasn't readable. Try again.");
+        const what = LIST_MODES[d.mode].replace(/^\S+\s/, "").toLowerCase();
+        const prompt = `You are helping an Australian eBay seller list a second-hand ${what}. The photos show the item.
+${known ? `Known so far: ${known}.\n` : ""}${hint ? `The seller says this item is: "${hint}". Trust that over your own reading of the photos.\n` : ""}
+Fill in the listing:
+- identified: what the item is, in a few words; confidence: 0 to 1.
+- title: an eBay title of at most 80 characters, using the words buyers search for (name, platform or format, edition, PAL/region if shown). No emojis, no ALL CAPS, no "L@@K", nothing the photos don't show.
+- searchQuery: 2-6 words that would find the same item on eBay.
+- specifics: values for any of these eBay item specifics that the photos, or general knowledge of this exact item, make clear: ${names.join(", ")}. Leave out any you are unsure of.
+- condition: "new" only if sealed or unused, "parts" if visibly broken, otherwise "used".
+- conditionNote: one sentence on visible wear and what is included or missing (case, manual, disc, pieces). Never claim it was tested.
+- description: 3-6 short plain-text lines: what it is, what is included, its condition. No postage, returns or payment text.`;
+        const specName = names.length ? { type: "string", enum: names } : { type: "string" };
+        const r = await claudeVision(imgs, prompt, {
+          type: "object", additionalProperties: false,
+          required: ["identified", "confidence", "title", "searchQuery", "specifics", "condition", "conditionNote", "description"],
+          properties: {
+            identified: { type: "string" },
+            confidence: { type: "number", description: "0 to 1" },
+            title: { type: "string", description: "At most 80 characters" },
+            searchQuery: { type: "string" },
+            specifics: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: specName, value: { type: "string" } } } },
+            condition: { type: "string", enum: ["new", "used", "parts"] },
+            conditionNote: { type: "string" },
+            description: { type: "string" }
+          }
+        });
         const ue = d.userEdited;
         d.aiIdentified = r.identified || "";
         d.aiConfidence = typeof r.confidence === "number" ? r.confidence : null;
-        if (r.title && !ue.title) d.title = fitTitle(r.title);
+        if (r.title && !ue.title) d.title = fitTitle(String(r.title));
         if (r.searchQuery) d.compsQuery = String(r.searchQuery).slice(0, 100);
         if (r.description && !ue.description) d.description = String(r.description).trim();
         if (r.conditionNote && !ue.conditionNote) d.conditionNote = String(r.conditionNote).trim().slice(0, 1000);
-        if (r.condition && !ue.condition) d.condition = r.condition === "new" ? "1000" : r.condition === "parts" ? "7000" : (d.mode === "books" ? "5000" : "3000");
-        for (const [k, v] of Object.entries(r.specifics || {})) {
+        const cond = String(r.condition || "").toLowerCase();
+        if (cond && !ue.condition) d.condition = cond === "new" ? "1000" : cond === "parts" ? "7000" : (d.mode === "books" ? "5000" : "3000");
+        const specPairs = (r.specifics || []).map(x => [names.find(n => n.toLowerCase() === String(x.name || "").toLowerCase()) || x.name, x.value]);
+        for (const [k, v] of specPairs) {
           const val = Array.isArray(v) ? v.join(", ") : String(v ?? "").trim();
           if (val && !/^(unknown|n\/?a|none|value|-)$/i.test(val) && !(ue.specifics || {})[k]) d.specifics[k] = val.slice(0, 65);
         }
@@ -3882,10 +3940,10 @@ Leave out any specific you can't tell from the photos or general knowledge of th
         renderDraftEditor();
       }
     }
-    function saveDraftGeminiKey() {
-      const v = (document.getElementById("draftGeminiKey")?.value || "").trim();
+    function saveDraftClaudeKey() {
+      const v = (document.getElementById("draftClaudeKey")?.value || "").trim();
       if (!v) return;
-      localStorage.setItem("bulk_gemini_key", v);
+      saveClaudeSettings(v, document.getElementById("draftClaudeModel")?.value || null);
       const d = getDraft(currentDraftId);
       if (d && d.photos.length) aiReadDraft(d.id); else renderDraftEditor();
     }
@@ -4224,7 +4282,7 @@ Leave out any specific you can't tell from the photos or general knowledge of th
       document.getElementById("listingsTitle").innerText = d.title ? "Edit draft" : "New draft";
       document.getElementById("listingsSubtitle").innerText = d.source === "lot" ? "From your bulk lot. Price and cost are filled in." : d.source === "barcode" ? `From barcode ${d.gtin}` : "Add photos, let AI fill it in, then check it.";
       const id = d.id, busy = draftBusy[id];
-      const hasKey = !!(localStorage.getItem("bulk_gemini_key") || "").trim();
+      const hasKey = !!claudeKey();
       const asp = aspectsMemo[d.categoryId];
       const conds = (asp && asp.conditions && asp.conditions.length) ? asp.conditions : (d.mode === "books" ? DEFAULT_CONDITIONS.books : DEFAULT_CONDITIONS.other);
       const inputCls = "w-full px-2.5 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -4246,11 +4304,14 @@ Leave out any specific you can't tell from the photos or general knowledge of th
         </div>`).join("");
       const aiBlock = !d.photos.length ? "" : !hasKey ? `
         <div class="bg-slate-900 border border-slate-700 rounded-xl p-2.5 space-y-1.5">
-          <div class="text-[11px] text-slate-300">Let AI fill in the listing from the photos: paste a free Google Gemini key (<a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="text-blue-300 underline">get one here</a>). It's saved on this device only.</div>
-          <div class="flex gap-2"><input id="draftGeminiKey" type="password" placeholder="AIza…" class="${inputCls}"><button type="button" onclick="saveDraftGeminiKey()" class="px-3 rounded-lg bg-emerald-600 text-white text-xs font-bold">Save</button></div>
+          <div class="text-[11px] text-slate-300">Let Claude fill in the listing from the photos: paste a Claude API key (<a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener" class="text-blue-300 underline">get one here</a>). It's saved on this device and only sent to Anthropic.</div>
+          <div class="flex gap-2"><input id="draftClaudeKey" type="password" autocomplete="off" placeholder="sk-ant-…" class="${inputCls}"><button type="button" onclick="saveDraftClaudeKey()" class="px-3 rounded-lg bg-emerald-600 text-white text-xs font-bold">Save</button></div>
+          <label class="flex items-center justify-between gap-2 text-[10px] text-slate-400">Model <select id="draftClaudeModel" class="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white">${claudeModelOptions()}</select></label>
+          <div class="text-[10px] text-slate-500">Pay-as-you-go: roughly 10c a read on Opus, 5c on Sonnet, under 1c on Haiku.</div>
         </div>` : `
         <div class="flex items-center gap-2 flex-wrap">
           <button type="button" onclick="aiReadDraft('${id}')" ${busy ? "disabled" : ""} class="px-3 py-2 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold flex items-center gap-1.5 disabled:opacity-50"><i data-lucide="sparkles" class="w-3.5 h-3.5"></i>${d.aiIdentified ? "Read photos again" : "Read my photos"}</button>
+          <select id="draftClaudeModel" onchange="saveClaudeSettings(null, this.value)" title="Claude model" class="bg-slate-950 border border-slate-700 rounded-lg px-1.5 py-1.5 text-[10px] text-slate-300">${claudeModelOptions()}</select>
           ${d.aiIdentified ? `<span class="text-[11px] text-slate-300">We think this is <b class="text-white">${escapeHtml(d.aiIdentified)}</b>${d.aiConfidence != null ? ` <span class="text-slate-500">(${Math.round(d.aiConfidence * 100)}%)</span>` : ""}</span>` : `<span class="text-[10px] text-slate-500">Reads the first ${AI_PHOTOS} photos. Put the clearest shot of the front, labels and model number first.</span>`}
         </div>
         ${d.aiIdentified ? `<div class="flex gap-2"><input id="draftNotIt" placeholder="Not it? Say what it is, e.g. Sled Storm PS2" class="${inputCls}" onkeydown="if(event.key==='Enter') aiNotIt('${id}')"><button type="button" onclick="aiNotIt('${id}')" class="px-3 rounded-lg bg-slate-800 border border-slate-700 text-white text-[11px] font-bold shrink-0">Read again</button></div>` : ""}`;

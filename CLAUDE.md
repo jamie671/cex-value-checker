@@ -18,7 +18,7 @@ This document contains complete project instructions, architecture details, and 
 
 ```
 cex-value-checker/
-├── index.html           # Standalone mobile PWA web app (HTML5, Tailwind CSS, Lucide icons, Tesseract.js, Gemini Vision, Algolia)
+├── index.html           # Standalone mobile PWA web app (HTML5, Tailwind CSS, Lucide icons, Tesseract.js, Claude vision, Algolia)
 ├── cex_scraper.py       # Python 3 CLI scraper & spreadsheet generator with official eBay Production API integration
 ├── ebay_config.json     # Private eBay API credentials (NEVER COMMIT TO GIT - listed in .gitignore)
 ├── .gitignore           # Ignores ebay_config.json, *.env, __pycache__, .DS_Store
@@ -27,6 +27,7 @@ cex-value-checker/
 ├── icon-512.png         # High-res splash icon (512x512)
 ├── qr_code.png          # QR code for opening the web app on mobile devices
 ├── README.md            # Public project README
+├── vendor/              # anthropic-sdk-1.3.0.min.js: the Anthropic TS SDK bundled for the browser (rebuild steps in vendor/README.md)
 └── worker/              # Cloudflare Worker: eBay AU price proxy (holds eBay secrets, see 3.D)
     ├── wrangler.jsonc
     └── src/index.js
@@ -59,11 +60,13 @@ CeX Australia (`au.webuy.com`) uses Algolia for real-time inventory and pricing 
 - **Buy Browse Search Endpoint**: `https://api.ebay.com/buy/browse/v1/item_summary/search`
 - **Categories**: Video Games (`139973`), Movies & TV (`617`), Books (`267`)
 
-### C. Google Gemini AI Vision (Optional in Web App)
-- `index.html` supports Gemini for cloud-based AI reading of shelf photos. This is the most reliable way to read a shelf or pile of games in a shop.
-- **Model fallback chain** (`GEMINI_MODELS` in `index.html`): `gemini-3.5-flash-lite` -> `gemini-3.5-flash` -> `gemini-2.5-flash-lite` -> `gemini-2.5-flash`. The app walks the list when a model ID returns 404 / "not found". `gemini-2.0-flash` was shut down by Google on 1 June 2026 and must not be used.
-- Photos are re-encoded client-side to JPEG (max 2400px) before upload, so iPhone HEIC photos work.
-- Free API keys are created via Google AI Studio (`https://aistudio.google.com/app/apikey`) and saved in the user's browser `localStorage` under `bulk_gemini_key`.
+### C. Claude vision (Optional in Web App; replaced Google Gemini on 2026-11-07)
+- Used for AI Vision shelf reading (`callClaudeShelfVision`) and the listing draft AI read (`aiReadDraft`). Both go through `claudeVision(imagesB64, prompt, schema)`: one Messages API call with base64 JPEG image blocks + text, structured outputs (`output_config.format` `json_schema`, every object `additionalProperties: false`, no min/max/length keywords), `effort: "medium"`, `max_tokens` 16000, thinking left at the model default (adaptive). Check `stop_reason` (`refusal`, `max_tokens`) before parsing.
+- **SDK in the browser**: the official `@anthropic-ai/sdk` 1.3.0 bundled with esbuild into `vendor/anthropic-sdk-1.3.0.min.js`, dynamically imported on first use (`anthropicSdk()`); client is `new Anthropic({ apiKey, dangerouslyAllowBrowser: true })` (sends `anthropic-dangerous-direct-browser-access: true`, API version 2026-10-21, key as `Authorization: Bearer`). Bump the bundle per `vendor/README.md`.
+- **Models** (`CLAUDE_MODELS`, user picks in the AI settings, `localStorage.claude_model`): `claude-opus-5-5` (default), `claude-sonnet-5-5`, `claude-haiku-5-5`. Opus/Sonnet calls go through `client.beta.messages.create` with `betas: ["server-side-fallback-2026-07-01"]` + `fallbacks: "default"` (a safety-classifier decline is re-run server-side on Anthropic's recommended fallback); Haiku has no server-side fallback, so it uses plain `client.messages.create`.
+- **Images**: shelf photos are re-encoded to JPEG at max 2576px long edge (the high-resolution vision limit on Claude 4.7+ models, max 4,784 visual tokens; tokens = ceil(w/28) x ceil(h/28)); iPhone HEIC works because the browser decodes it first. Listing photos are sent as stored (JPEG, max 1600px, first 6) without a second compression pass.
+- **Cost** (pay-as-you-go, user's Claude Console account, not covered by a Claude Pro/Max subscription): roughly 4c per shelf photo and ~10c per 6-photo listing read on Opus 5.5 ($4/$20 per M tokens), about half on Sonnet 5.5, well under 1c on Haiku 5.5.
+- **Key**: created at `https://platform.claude.com/settings/keys`, saved in `localStorage.claude_api_key` (`claudeKey()`, `saveClaudeSettings()`); `?claude_key=` in the URL saves it once and strips it from the address bar. Errors are mapped to plain messages by SDK error class (`claudeErrorText`).
 
 ### D. eBay price proxy (Cloudflare Worker `cex-ebay-proxy`)
 The browser cannot call eBay directly (CORS + secret exposure), so `worker/` is a Cloudflare Worker that holds the eBay credentials as Worker secrets and returns clean price stats.
@@ -114,9 +117,9 @@ The browser cannot call eBay directly (CORS + secret exposure), so `worker/` is 
    - **Settings**: shop price per item and postage-you-pay (postage is remembered per mode via `postageByMode`/`postageFor`; board games default to $12, other modes keep the original single value) (persisted in `lot_settings`); bulk asking price only in Games mode. Media modes sort cards Buy -> Marginal -> Leave -> no data and relabel the tiles (Items / Worth buying / Sell value / Est. profit).
 3c. **eBay listing drafts** (green "List" header button, `#listingsModal`, added 2026-11-07; features modelled on flippedit.com.au's listing tools). Phase 1 = no eBay sign-in: drafts are sent by copy/paste or a Seller Hub CSV upload.
    - **Storage**: drafts in `localStorage.listing_drafts_v1` (`listingDrafts`); photos as JPEG blobs (max 1600px) in IndexedDB `cex_listing_photos` (`idbPhoto`). Header badge = drafts not marked listed.
-   - **Starting a draft**: "From photos" (`newPhotoDraft` -> `onDraftPhotosChosen`; auto AI read if a Gemini key is saved), "Scan barcode" (`startDraftBarcodeScan` sets `draftScanMode`, `onBarcodeFound` hands off to `createDraftFromBarcode`: CeX boxId lookup, then eBay by GTIN, `consensusTitle` when CeX doesn't know it; 978/979 ISBNs -> Books), "Type it" (`newBlankDraft`), and "Bought it · draft listing" on Bulk evaluator cards (`draftFromLotItem`, `draftAllBuys`) which carries the CeX name, platform, shop price as cost, and the lot's matching eBay listings (`attachEbay` now keeps `ebay.listings`).
+   - **Starting a draft**: "From photos" (`newPhotoDraft` -> `onDraftPhotosChosen`; auto AI read if a Claude key is saved), "Scan barcode" (`startDraftBarcodeScan` sets `draftScanMode`, `onBarcodeFound` hands off to `createDraftFromBarcode`: CeX boxId lookup, then eBay by GTIN, `consensusTitle` when CeX doesn't know it; 978/979 ISBNs -> Books), "Type it" (`newBlankDraft`), and "Bought it · draft listing" on Bulk evaluator cards (`draftFromLotItem`, `draftAllBuys`) which carries the CeX name, platform, shop price as cost, and the lot's matching eBay listings (`attachEbay` now keeps `ebay.listings`).
    - **Photos**: up to 24 per draft; each checked on add (`analysePhoto`: <500px longest side, mean brightness <70 dark / >225 washed out, Laplacian variance <30 "may be blurry"). Brighten (`brightenDraftPhoto`) picks a gamma that moves mean brightness toward mid-grey. Make cover, delete, and "Save photos to phone" (Web Share with files, else downloads) because CSV drafts can't carry local photos.
-   - **AI read** (`aiReadDraft`, `geminiGenerate`): first 6 photos at 1280px + JSON-mode prompt (`responseMimeType: application/json`) asking for identified/confidence/title/searchQuery/specifics (names from eBay's aspects for the category)/condition/conditionNote/description. Fields the user typed (`draft.userEdited`) are never overwritten. "Not it?" re-reads with the user's hint. `callGeminiVision` (shelf OCR) now also goes through `geminiGenerate`.
+   - **AI read** (`aiReadDraft` -> `claudeVision`, see 3.C): first 6 stored photos + a structured-output schema for identified/confidence/title/searchQuery/specifics/condition/conditionNote/description. `specifics` is an array of `{name, value}` with `name` enum-limited to eBay's aspect names for the category (mapped back case-insensitively). Fields the user typed (`draft.userEdited`) are never overwritten. "Not it?" re-reads with the user's hint.
    - **Category + specifics**: `ensureCategory` takes the leaf category most matching comps use (>=40% of >=3), else the Worker's first suggestion, else `DEFAULT_CATEGORY` (games 139973, movies 617, board games 180349). `loadAspects` (cached 7 days in `ebay_aspects_v1_<cat>`) gives the specifics form (required marked *) and condition list; `reconcileDraft` maps free text onto SELECTION_ONLY values (`closestValue`, e.g. "PlayStation 2" -> "Sony PlayStation 2"). Without the Worker routes it falls back to `DEFAULT_SPECIFICS` / `DEFAULT_CONDITIONS`.
    - **Price + profit**: `refreshDraftComps` (GTIN first, falls back to the name when <3 barcode listings; `relevantEbay` filtering for text). `pricePicks` = undercut (max(low, p25-0.5)), middle (median), top (p75), less postage charged, rounded to x.99. `draftProfit` = total*(1-13.4%) - $0.30 - ad rate - postage paid - cost. Title helper `titleSuggestions` offers words in >=40% (min 3) of the top 10 comps titles.
    - **Listing check** (`draftChecks`): photos, title <=80, category, condition, required specifics, description, price, postage paid, cost. Custom label (`customLabel`) = "location | $cost | yymmdd" (<=50 chars) so phase 3 sales sync can match a sale to its cost.
