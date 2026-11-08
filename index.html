@@ -2843,7 +2843,7 @@
     try { Object.assign(lotState.settings, JSON.parse(localStorage.getItem("lot_settings") || "{}")); } catch (e) {}
 
     // Postage is remembered per mode: a boxed board game costs far more to send than a disc or CD
-    const DEFAULT_POSTAGE = { games: null, movies: null, books: null, music: null, boardgames: 12 };
+    const DEFAULT_POSTAGE = { games: null, movies: null, books: null, music: null, boardgames: 12, other: 10 };
     function postageFor(mode) {
       const by = lotState.settings.postageByMode || {};
       if (by[mode] != null) return by[mode];
@@ -2890,7 +2890,8 @@
           // Board games: "board game" keeps out apps (Monopoly GO), guides and video game versions
           if (mode === "boardgames" && !/\bgame\b/i.test(q)) q += " board game";
           params.set("q", q);
-          params.set("cat", LOT_MODES[mode].ebayCat);
+          const ebayCat = (LOT_MODES[mode] || {}).ebayCat;
+          if (ebayCat) params.set("cat", ebayCat);
         }
         if (item.exclude) { params.set("exclude", item.exclude); params.set("limit", "50"); }
         if (mode === "boardgames") params.set("sort", "match");
@@ -3416,7 +3417,13 @@
     // Phase 1: draft here (photos, AI read, comps, profit, listing check), then send to eBay by copying the
     // fields into the eBay app or uploading a CSV of drafts in Seller Hub. Nothing here signs in to eBay.
     const LISTING_KEY = "listing_drafts_v1";
-    const LIST_MODES = { games: "🎮 Game", movies: "🎬 Movie", books: "📚 Book", music: "💿 Music", boardgames: "🎲 Board game" };
+    const LIST_MODES = { other: "📦 Anything", games: "🎮 Game", movies: "🎬 Movie", books: "📚 Book", music: "💿 Music", boardgames: "🎲 Board game" };
+    // How the AI prompt names each type
+    const LIST_NOUNS = { other: "item", games: "video game", movies: "film or TV disc", books: "book", music: "music release", boardgames: "board game" };
+    // Specifics worth asking for before eBay's own list for the category is known
+    // General wear grades for the first AI read (before the category's own grades are known) -> eBay condition IDs
+    const CONDITION_WORDS = { "new": "1000", "like new": "2750", "very good": "4000", "good": "5000", "acceptable": "6000", "used": "3000", "parts": "7000" };
+    const GENERIC_SPECIFICS = ["Brand", "Type", "Character", "Franchise", "Model", "MPN", "Year Manufactured", "Age Level", "Colour", "Material", "Size"];
     // Used only when the Worker's category lookup is unavailable
     const DEFAULT_CATEGORY = {
       games: { id: "139973", name: "Video Games" },
@@ -3428,7 +3435,8 @@
       movies: ["Format", "Movie/TV Title", "Region Code", "Rating", "Genre"],
       books: ["Book Title", "Author", "Format", "Language", "Publisher"],
       music: ["Artist", "Release Title", "Format", "Genre"],
-      boardgames: ["Game Title", "Brand", "Number of Players", "Age Level"]
+      boardgames: ["Game Title", "Brand", "Number of Players", "Age Level"],
+      other: ["Brand", "Type", "Model", "MPN"]
     };
     const DEFAULT_CONDITIONS = {
       books: [{ id: "1000", name: "Brand New" }, { id: "2750", name: "Like New" }, { id: "4000", name: "Very Good" }, { id: "5000", name: "Good" }, { id: "6000", name: "Acceptable" }],
@@ -3475,7 +3483,7 @@
     const fmtMoney = (v) => v == null ? "-" : `${v < 0 ? "-" : ""}$${Math.abs(v).toFixed(2)}`;
 
     function newDraft(fields) {
-      const mode = LIST_MODES[fields.mode] ? fields.mode : (LIST_MODES[lotState.mode] ? lotState.mode : "games");
+      const mode = LIST_MODES[fields.mode] ? fields.mode : "other";
       const d = {
         id: "d" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         created: Date.now(), updated: Date.now(), status: "draft", source: "blank", mode,
@@ -3613,7 +3621,7 @@
       if (!files.length) return;
       let d = getDraft(currentDraftId);
       const fresh = !d;
-      if (!d) { d = newDraft({ source: "photos" }); currentDraftId = d.id; }
+      if (!d) { d = newDraft({ source: "photos", mode: "other" }); currentDraftId = d.id; }
       const room = MAX_PHOTOS - d.photos.length;
       if (room <= 0) return alert(`A draft holds up to ${MAX_PHOTOS} photos.`);
       draftBusy[d.id] = `Adding ${Math.min(room, files.length)} photo${files.length === 1 ? "" : "s"}…`;
@@ -3783,6 +3791,13 @@
     function reconcileDraft(d) {
       const asp = aspectsMemo[d.categoryId];
       if (!asp) return;
+      const aspNames = asp.aspects.map(a => a.name);
+      const userSpec = d.userEdited.specifics || {};
+      for (const k of Object.keys(d.specifics)) {
+        if (aspNames.includes(k) || userSpec[k]) continue;
+        const target = aspNames.find(n => n.toLowerCase() === k.toLowerCase()) || closestValue(k, aspNames);
+        if (target && !(d.specifics[target] || "").trim()) { d.specifics[target] = d.specifics[k]; delete d.specifics[k]; }
+      }
       for (const a of asp.aspects) {
         const cur = d.specifics[a.name];
         if (cur && a.mode === "SELECTION_ONLY" && a.values.length && !a.values.includes(cur)) {
@@ -3945,56 +3960,73 @@
         const imgs = [];
         for (const p of d.photos.slice(0, AI_PHOTOS)) { const b = await photoBase64(p.id); if (b) imgs.push(b); }
         await ensureCategory(d);
-        const names = draftSpecNames(d);
-        const known = [d.cexName && `CeX lists it as "${d.cexName}"`, d.gtin && `barcode ${d.gtin}`, d.userEdited.title && d.title && `the seller's title is "${d.title}"`].filter(Boolean).join("; ");
-        const condList = ((aspectsMemo[d.categoryId] || {}).conditions || []).map(c => c.name).filter(Boolean);
+        const ue = d.userEdited;
+        // Category known (and eBay's specifics for it loaded): ask for exactly those. Otherwise let Claude name the
+        // specifics itself; they are mapped onto eBay's names once the category is found.
+        const asp0 = d.categoryId ? aspectsMemo[d.categoryId] : null;
+        const names = asp0 ? asp0.aspects.map(a => a.name) : [];
+        const hintNames = [...new Set([...(DEFAULT_SPECIFICS[d.mode] || []), ...GENERIC_SPECIFICS])];
+        const askType = !ue.mode && !d.cexName;
+        const known = [d.cexName && `CeX lists it as "${d.cexName}"`, d.gtin && `barcode ${d.gtin}`, ue.title && d.title && `the seller's title is "${d.title}"`].filter(Boolean).join("; ");
+        const condList = (asp0 && asp0.conditions || []).map(c => c.name).filter(Boolean);
         const condNames = condList.length ? condList : null;   // null = category grades unknown, use new/used/parts
-        const what = LIST_MODES[d.mode].replace(/^\S+\s/, "").toLowerCase();
+        const what = askType ? "item" : (LIST_NOUNS[d.mode] || "item");
         const prompt = `You are helping an Australian eBay seller list a second-hand ${what}. The photos show the item.
 ${known ? `Known so far: ${known}.\n` : ""}${hint ? `The seller says this item is: "${hint}". Trust that over your own reading of the photos.\n` : ""}
 Fill in the listing:
-- identified: what the item is, in a few words; confidence: 0 to 1.
-- title: an eBay title of at most 80 characters, using the words buyers search for (name, platform or format, edition, PAL/region if shown). No emojis, no ALL CAPS, no "L@@K", nothing the photos don't show.
+- identified: what the item is, in a few words (brand, product, model or set number); confidence: 0 to 1.
+${askType ? `- itemType: "games" for a video game, "movies" for a film or TV show on disc, "books" for a book, "music" for a CD, record or cassette, "boardgames" for a board or card game, otherwise "other" (toys, collectables, electronics, clothing, homewares, anything else).\n` : ""}- title: an eBay title of at most 80 characters, using the words buyers search for: brand, product name, model or set number, edition, size, platform or format, PAL/region if shown. No emojis, no ALL CAPS, no "L@@K", nothing the photos don't show.
 - searchQuery: 2-6 words that would find the same item on eBay.
-- specifics: values for any of these eBay item specifics that the photos, or general knowledge of this exact item, make clear: ${names.join(", ")}. Leave out any you are unsure of.
-- condition: ${condNames ? `the eBay grade that matches what the photos show: one of ${condNames.join(", ")}. Only a new grade if it is sealed or unused; if you can't judge the wear, pick the middle grade.` : `"new" only if sealed or unused, "parts" if visibly broken, otherwise "used".`}
-- conditionNote: one sentence on visible wear and what is included or missing (case, manual, disc, pieces). Never claim it was tested.
+- specifics: ${names.length
+    ? `values for any of these eBay item specifics that the photos, or general knowledge of this exact item, make clear: ${names.join(", ")}.`
+    : `the item specifics eBay buyers filter by for this kind of item (for example ${hintNames.join(", ")}), using eBay's usual names, with values the photos or general knowledge of this exact item make clear.`} Leave out any you are unsure of.
+- condition: ${condNames ? `the eBay grade that matches what the photos show: one of ${condNames.join(", ")}. Only a new grade if it is sealed or unused; if you can't judge the wear, pick the middle grade.` : `"new" only if sealed or unused; otherwise grade the visible wear as "like new", "very good", "good" or "acceptable" (heavy wear); "used" if you can't judge it; "parts" if visibly broken.`}
+- conditionNote: one sentence on visible wear and what is included or missing (box, case, manual, disc, pieces, accessories). Never claim it was tested.
 - description: 3-6 short plain-text lines: what it is, what is included, its condition. No postage, returns or payment text.`;
         const specName = names.length ? { type: "string", enum: names } : { type: "string" };
-        const catConds = (aspectsMemo[d.categoryId] || {}).conditions || [];
-        const r = await claudeVision(imgs, prompt, {
-          type: "object", additionalProperties: false,
-          required: ["identified", "confidence", "title", "searchQuery", "specifics", "condition", "conditionNote", "description"],
-          properties: {
-            identified: { type: "string" },
-            confidence: { type: "number", description: "0 to 1" },
-            title: { type: "string", description: "At most 80 characters" },
-            searchQuery: { type: "string" },
-            specifics: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: specName, value: { type: "string" } } } },
-            condition: { type: "string", enum: condNames || ["new", "used", "parts"] },
-            conditionNote: { type: "string" },
-            description: { type: "string" }
-          }
-        });
-        const ue = d.userEdited;
+        const catConds = (asp0 && asp0.conditions) || [];
+        const props = {
+          identified: { type: "string" },
+          confidence: { type: "number", description: "0 to 1" },
+          title: { type: "string", description: "At most 80 characters" },
+          searchQuery: { type: "string" },
+          specifics: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: specName, value: { type: "string" } } } },
+          condition: { type: "string", enum: condNames || Object.keys(CONDITION_WORDS) },
+          conditionNote: { type: "string" },
+          description: { type: "string" }
+        };
+        if (askType) props.itemType = { type: "string", enum: Object.keys(LIST_MODES) };
+        const r = await claudeVision(imgs, prompt, { type: "object", additionalProperties: false, required: Object.keys(props), properties: props });
         d.aiIdentified = r.identified || "";
         d.aiConfidence = typeof r.confidence === "number" ? r.confidence : null;
+        const type = String(r.itemType || "").toLowerCase();
+        if (askType && LIST_MODES[type] && type !== d.mode) {
+          d.mode = type;
+          if (!ue.postPaid) d.postPaid = postageFor(type);
+          if (!ue.category) { d.categoryId = ""; d.categoryName = ""; }
+        }
         if (r.title && !ue.title) d.title = fitTitle(String(r.title));
         if (r.searchQuery) d.compsQuery = String(r.searchQuery).slice(0, 100);
         if (r.description && !ue.description) d.description = String(r.description).trim();
         if (r.conditionNote && !ue.conditionNote) d.conditionNote = String(r.conditionNote).trim().slice(0, 1000);
         const cond = String(r.condition || "").toLowerCase();
         const graded = catConds.find(c => c.name.toLowerCase() === cond);   // enum case isn't guaranteed
-        if (cond && !ue.condition) d.condition = graded ? graded.id : cond === "new" ? "1000" : cond === "parts" ? "7000" : (d.mode === "books" ? "5000" : "3000");
-        const specPairs = (r.specifics || []).map(x => [names.find(n => n.toLowerCase() === String(x.name || "").toLowerCase()) || x.name, x.value]);
-        for (const [k, v] of specPairs) {
-          const val = Array.isArray(v) ? v.join(", ") : String(v ?? "").trim();
-          if (val && !/^(unknown|n\/?a|none|value|-)$/i.test(val) && !(ue.specifics || {})[k]) d.specifics[k] = val.slice(0, 65);
-        }
+        // A general grade becomes eBay's standard ID; nearestCondition later fits it to the category's own grades
+        if (cond && !ue.condition) d.condition = graded ? graded.id : (CONDITION_WORDS[cond] || (d.mode === "books" ? "5000" : "3000"));
+        applyAiSpecifics(d, r.specifics, names);
         draftBusy[id] = "Checking eBay prices…";
         renderDraftEditor();
+        const catBefore = d.categoryId;
         await refreshDraftComps(d);
         await ensureCategory(d, !ue.category);
+        // Second, short pass when the category was only found now and eBay requires specifics we don't have yet
+        const asp1 = aspectsMemo[d.categoryId];
+        const missing = asp1 && d.categoryId !== catBefore ? asp1.aspects.filter(a => a.required && !(d.specifics[a.name] || "").trim()) : [];
+        if (missing.length) {
+          draftBusy[id] = `Filling in eBay's details for ${d.categoryName || "this category"}…`;
+          renderDraftEditor();
+          await aiFillCategoryDetails(d, imgs, asp1);
+        }
         d.updated = Date.now();
       } catch (e) {
         console.warn(e);
@@ -4004,6 +4036,33 @@ Fill in the listing:
         saveDrafts(true);
         renderDraftEditor();
       }
+    }
+    function applyAiSpecifics(d, list, names) {
+      const userSpec = d.userEdited.specifics || {};
+      for (const x of (list || [])) {
+        const raw = String(x.name || "").trim();
+        if (!raw) continue;
+        const k = names.find(n => n.toLowerCase() === raw.toLowerCase()) || raw;
+        const v = x.value;
+        const val = Array.isArray(v) ? v.join(", ") : String(v ?? "").trim();
+        if (val && !/^(unknown|n\/?a|none|value|-)$/i.test(val) && !userSpec[k]) d.specifics[k] = val.slice(0, 65);
+      }
+    }
+    // Pass 2: the category's own specifics and condition grades, now that eBay's lists for it are known
+    async function aiFillCategoryDetails(d, imgs, asp) {
+      const names = asp.aspects.map(a => a.name);
+      const grades = (asp.conditions || []).map(c => c.name).filter(Boolean);
+      const need = asp.aspects.filter(a => a.required).map(a => a.name);
+      const prompt = `The photos show: ${d.aiIdentified || d.title}. It is being listed on eBay Australia in the category "${d.categoryName || d.categoryId}".
+Give values for these eBay item specifics where the photos, or general knowledge of this exact item, make them clear: ${names.join(", ")}. eBay requires: ${need.join(", ")}. For a required specific you can't tell, give your best short answer (for example "Unbranded" for Brand) rather than leaving it out; leave out optional ones you are unsure of.${grades.length ? `\ncondition: the grade that matches what the photos show, one of ${grades.join(", ")}. Only a new grade if it is sealed or unused; if you can't judge the wear, pick the middle grade.` : ""}`;
+      const props = { specifics: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "value"], properties: { name: { type: "string", enum: names }, value: { type: "string" } } } } };
+      if (grades.length) props.condition = { type: "string", enum: grades };
+      const r = await claudeVision(imgs, prompt, { type: "object", additionalProperties: false, required: Object.keys(props), properties: props });
+      applyAiSpecifics(d, r.specifics, names);
+      const g = String(r.condition || "").toLowerCase();
+      const graded = (asp.conditions || []).find(c => c.name.toLowerCase() === g);
+      if (graded && !d.userEdited.condition) d.condition = graded.id;
+      reconcileDraft(d);
     }
     function aiNotIt(id) {
       const hint = (document.getElementById("draftNotIt")?.value || "").trim();
@@ -4075,7 +4134,8 @@ Fill in the listing:
     async function createDraftFromBarcode(code) {
       const gtin = String(code).replace(/\D/g, "");
       if (gtin.length < 8 || gtin.length > 14) return alert(`"${code}" doesn't look like a product barcode.`);
-      let mode = /^97[89]/.test(gtin) && gtin.length === 13 ? "books" : (LIST_MODES[lotState.mode] ? lotState.mode : "games");
+      // ISBNs are books; CeX names games and films below; anything else is found from eBay's listings
+      let mode = /^97[89]/.test(gtin) && gtin.length === 13 ? "books" : "other";
       const d = newDraft({ source: "barcode", gtin, mode, specifics: prefillSpecifics(mode, "", "", gtin) });
       openListingsModal(d.id);
       draftBusy[d.id] = `Looking up barcode ${gtin}…`;
@@ -4367,7 +4427,7 @@ Fill in the listing:
           <select id="draftClaudeModel" onchange="saveClaudeSettings(this.value)" title="Claude model" class="bg-slate-950 border border-slate-700 rounded-lg px-1.5 py-1.5 text-[10px] text-slate-300">${claudeModelOptions()}</select>
           ${d.aiIdentified ? `<span class="text-[11px] text-slate-300">We think this is <b class="text-white">${escapeHtml(d.aiIdentified)}</b>${d.aiConfidence != null ? ` <span class="text-slate-500">(${Math.round(d.aiConfidence * 100)}%)</span>` : ""}</span>` : `<span class="text-[10px] text-slate-500">Reads the first ${AI_PHOTOS} photos. Put the clearest shot of the front, labels and model number first.</span>`}
         </div>
-        ${d.aiIdentified ? `<div class="flex gap-2"><input id="draftNotIt" placeholder="Not it? Say what it is, e.g. Sled Storm PS2" class="${inputCls}" onkeydown="if(event.key==='Enter') aiNotIt('${id}')"><button type="button" onclick="aiNotIt('${id}')" class="px-3 rounded-lg bg-slate-800 border border-slate-700 text-white text-[11px] font-bold shrink-0">Read again</button></div>` : ""}`;
+        ${d.aiIdentified ? `<div class="flex gap-2"><input id="draftNotIt" placeholder="Not it? Say what it is, e.g. LEGO 75192 Falcon" class="${inputCls}" onkeydown="if(event.key==='Enter') aiNotIt('${id}')"><button type="button" onclick="aiNotIt('${id}')" class="px-3 rounded-lg bg-slate-800 border border-slate-700 text-white text-[11px] font-bold shrink-0">Read again</button></div>` : ""}`;
       const photos = section(1, "Photos", `
         <div class="grid grid-cols-3 sm:grid-cols-4 gap-2">${photoTiles}
           ${d.photos.length < MAX_PHOTOS ? `<button type="button" onclick="addDraftPhotos()" class="aspect-square rounded-lg border-2 border-dashed border-slate-700 text-slate-400 hover:text-white hover:border-emerald-600 flex flex-col items-center justify-center gap-1 text-[10px] font-bold"><i data-lucide="camera" class="w-5 h-5"></i>Add</button>` : ""}
@@ -4389,7 +4449,7 @@ Fill in the listing:
       const catSug = (d.catSuggestions || []).filter(s => s.id !== d.categoryId).slice(0, 4).map(s =>
         `<button type="button" onclick="setDraftCategory('${id}', '${escapeHtml(s.id)}', ${escapeHtml(JSON.stringify(s.name))})" class="text-[10px] text-left text-slate-300 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 hover:border-emerald-600">${escapeHtml(s.name)}${s.path ? ` <span class="text-slate-500">· ${escapeHtml(s.path)}</span>` : ""}</button>`).join("");
       const details = section(2, "Details", `
-        <div class="grid grid-cols-5 gap-1 bg-slate-950/80 border border-slate-800 rounded-xl p-1 text-[10px]">
+        <div class="grid grid-cols-3 gap-1 bg-slate-950/80 border border-slate-800 rounded-xl p-1 text-[10px]">
           ${Object.entries(LIST_MODES).map(([m, l]) => `<button type="button" onclick="draftField('${id}','mode','${m}')" class="py-1 rounded-lg font-bold ${d.mode === m ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-white"}">${l}</button>`).join("")}
         </div>
         <div>${label("Title", `<span id="draftTitleCount" class="text-[10px] font-bold"></span>`)}
