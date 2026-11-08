@@ -18,8 +18,12 @@
 // The app's Anthropic SDK uses ${worker}/claude as its base URL. Only requests carrying the owner's device
 // passcode (X-App-Pass header, APP_PASS secret) are forwarded; models, parameters and beta headers are
 // allow-listed, and there is a per-minute limit (CLAUDE_LIMIT) and a daily cap (UsageCounter, CLAUDE_DAILY_CAP).
+//
+//   /ebay/account/*, /ebay/listing/*, /ebay/auth/callback -> owner-only eBay selling (see listing.js)
 
 import { DurableObject } from "cloudflare:workers";
+import { handleListing, OwnerStore } from "./listing.js";
+export { OwnerStore };
 
 const MARKETPLACE = "EBAY_AU";
 const COUNTRY = "AU";
@@ -313,6 +317,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/" || url.pathname === "/health") return json({ ok: true, service: "cex-ebay-proxy" }, 200, cors);
     if (url.pathname === "/claude/v1/messages") return claudeProxy(request, env, ctx, cors);
+    if (/^\/ebay\/(account|listing)\//.test(url.pathname) || url.pathname === "/ebay/auth/callback") return handleListing(request, env, ctx, cors, url);
     const ROUTES = ["/ebay/search", "/ebay/category", "/ebay/aspects"];
     if (!ROUTES.includes(url.pathname)) return json({ error: "Not found" }, 404, cors);
     if (!env.EBAY_APP_ID || !env.EBAY_CERT_ID) {

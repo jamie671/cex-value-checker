@@ -419,6 +419,18 @@
       try {
         localStorage.removeItem("claude_api_key");   // older builds kept a raw API key on the device
         const params = new URLSearchParams(window.location.search);
+        const ebay = params.get("ebay");
+        if (ebay) {
+          const reason = params.get("reason") || "";
+          params.delete("ebay"); params.delete("reason");
+          history.replaceState(null, "", window.location.pathname + (params.toString() ? "?" + params.toString() : "") + window.location.hash);
+          setTimeout(() => {
+            openListingsModal();
+            alert(ebay === "connected" ? "eBay account connected. Pick your postage, returns and payment policies, then list in one tap."
+              : ebay === "declined" ? "eBay sign-in was cancelled. Nothing was changed."
+              : `eBay sign-in didn't finish (${reason || "unknown"}). Try Connect eBay again.`);
+          }, 400);
+        }
         const pass = (params.get("unlock") || "").trim();
         if (!pass) return;
         localStorage.setItem("app_pass", pass);
@@ -2129,7 +2141,8 @@
       if (!v) return;
       try { localStorage.setItem("app_pass", v); } catch (e) {}
       fillClaudeModelSelects();
-      if (typeof renderDraftEditor === "function" && currentDraftId) renderDraftEditor();
+      const listOpen = !document.getElementById("listingsModal").classList.contains("hidden");
+      if (listOpen) { ebayAcct = null; if (currentDraftId) renderDraftEditor(); else renderDraftList(); }
     }
     function claudeStatusHtml() {
       return claudePass()
@@ -3488,7 +3501,7 @@
         id: "d" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         created: Date.now(), updated: Date.now(), status: "draft", source: "blank", mode,
         title: "", categoryId: "", categoryName: "", catSuggestions: [], condition: mode === "books" ? "5000" : "3000", conditionNote: "",
-        specifics: {}, description: "", price: null, postCharged: 0, postPaid: postageFor(mode), adRate: 0,
+        specifics: {}, description: "", price: null, postCharged: num2(ebaySettings().shippingCost) ?? 0, postPaid: postageFor(mode), adRate: 0,
         cost: null, bought: todayIso(), location: "", gtin: "", platformLabel: "", cexName: "", cexCash: null,
         compsQuery: "", comps: null, photos: [], userEdited: {}, aiIdentified: "",
         ...fields
@@ -3800,9 +3813,16 @@
       }
       for (const a of asp.aspects) {
         const cur = d.specifics[a.name];
-        if (cur && a.mode === "SELECTION_ONLY" && a.values.length && !a.values.includes(cur)) {
+        if (!cur || !a.values.length || a.values.includes(cur)) continue;
+        if (a.mode === "SELECTION_ONLY") {
           const m = closestValue(cur, a.values);
           if (m) d.specifics[a.name] = m;
+        } else if (!userSpec[a.name] && !/name|title|model|mpn|number|author|artist|character|set/i.test(a.name) && !cur.includes(",")) {
+          // Free text, but eBay lists standard wording ("PlayStation 2" -> "Sony PlayStation 2") that buyers filter by.
+          // Only when the standard value contains every word we have, so "Ace Combat 3" never becomes "Ace Combat".
+          const m = closestValue(cur, a.values);
+          const have = new Set(matchNorm(m || "").split(" "));
+          if (m && matchNorm(cur).split(" ").every(w => have.has(w))) d.specifics[a.name] = m;
         }
       }
       const conds = asp.conditions && asp.conditions.length ? asp.conditions : null;
@@ -4316,9 +4336,221 @@ Give values for these eBay item specifics where the photos, or general knowledge
     }
     function toggleDraftSelected(id, on) { const d = getDraft(id); if (d) { d.selected = on; saveDrafts(); } }
 
+    // ---- One-tap listing on eBay (through the Worker; the eBay sign-in lives there, see worker/src/listing.js) ----
+    let ebayAcct = null;            // last /ebay/account/status answer, this session
+    let ebayAcctLoading = null;
+    let ebaySettingsOpen = false;    // keep the settings panel open while it's being filled in
+    function ebaySettings() {
+      try { return JSON.parse(localStorage.getItem("ebay_settings") || "{}"); } catch (e) { return {}; }
+    }
+    function saveEbaySetting(key, value) {
+      const st = ebaySettings(); st[key] = String(value || "").trim();
+      if (key === "shipping") { const pol = ((ebayAcct && ebayAcct.policies && ebayAcct.policies.shipping) || []).find(p => p.id === st.shipping); st.shippingCost = pol && pol.cost != null ? pol.cost : null; }
+      try { localStorage.setItem("ebay_settings", JSON.stringify(st)); } catch (e) {}
+      if (key === "shipping") applyPolicyPostage();
+      if (currentDraftId) renderDraftEditor(); else renderDraftList();
+    }
+    async function ebayApi(path, opts = {}) {
+      const pass = claudePass();
+      if (!pass) throw new Error(CLAUDE_NOT_SET_UP);
+      let res;
+      try {
+        res = await fetch(`${EBAY_PROXY_URL}${path}`, { ...opts, headers: { "Content-Type": "application/json", "X-App-Pass": pass, ...(opts.headers || {}) } });
+      } catch (e) { throw new Error("Couldn't reach your Worker. Check your connection"); }
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 401) throw new Error("This device isn't unlocked (or the passcode changed). Open your setup link again");
+      if (res.status === 409 || body.notConnected) { ebayAcct = { connected: false }; throw new Error("Your eBay account isn't connected. Tap Connect eBay"); }
+      if (res.status === 503) throw new Error(body.error || "eBay listing isn't set up on the Worker yet");
+      if (res.status === 404) throw new Error("Your Worker needs updating for one-tap listing (run wrangler deploy)");
+      return { status: res.status, body };
+    }
+    async function loadEbayStatus(force) {
+      if (!claudePass()) { ebayAcct = null; return null; }
+      if (ebayAcct && !force) return ebayAcct;
+      if (!ebayAcctLoading) ebayAcctLoading = ebayApi("/ebay/account/status")
+        .then(r => { ebayAcct = r.body; autoPickPolicies(); applyPolicyPostage(); return ebayAcct; })
+        .catch(e => { ebayAcct = { connected: false, error: e.message }; return ebayAcct; })
+        .finally(() => { ebayAcctLoading = null; });
+      return ebayAcctLoading;
+    }
+    // One policy of a kind: use it without asking
+    function autoPickPolicies() {
+      if (!ebayAcct || !ebayAcct.policies) return;
+      const st = ebaySettings(); let changed = false;
+      for (const k of ["shipping", "return", "payment"]) {
+        const list = ebayAcct.policies[k] || [];
+        if (st[k] && !list.some(p => p.id === st[k])) { delete st[k]; changed = true; }
+        if (!st[k] && list.length === 1) { st[k] = list[0].id; changed = true; }
+      }
+      if (changed) try { localStorage.setItem("ebay_settings", JSON.stringify(st)); } catch (e) {}
+    }
+    function selectedShippingPolicy() {
+      const id = ebaySettings().shipping;
+      return ((ebayAcct && ebayAcct.policies && ebayAcct.policies.shipping) || []).find(p => p.id === id) || null;
+    }
+    // What the buyer pays for postage comes from the eBay postage policy: use it in the profit maths
+    function applyPolicyPostage() {
+      const pol = selectedShippingPolicy();
+      if (!pol || pol.cost == null) return;
+      const st = ebaySettings();
+      if (st.shippingCost !== pol.cost) { st.shippingCost = pol.cost; try { localStorage.setItem("ebay_settings", JSON.stringify(st)); } catch (e) {} }
+      for (const d of listingDrafts) if (d.status !== "listed" && !d.userEdited.postCharged) d.postCharged = pol.cost;
+      saveDrafts();
+    }
+    async function connectEbay() {
+      try {
+        const r = await ebayApi("/ebay/account/connect", { method: "POST" });
+        if (!r.body.url) throw new Error(r.body.error || "No sign-in link came back");
+        window.location.href = r.body.url;
+      } catch (e) { alert(e.message); }
+    }
+    async function disconnectEbay() {
+      if (!confirm("Disconnect your eBay account from this app? Listings already on eBay stay as they are.")) return;
+      try { await ebayApi("/ebay/account/disconnect", { method: "POST" }); } catch (e) { alert(e.message); }
+      ebayAcct = { connected: false };
+      renderDraftList();
+    }
+    function ebaySetupMissing() {
+      const st = ebaySettings(), missing = [];
+      if (!/^\d{4}$/.test(st.postalCode || "")) missing.push("postcode");
+      if (!st.shipping) missing.push("postage policy");
+      if (!st.return) missing.push("returns policy");
+      if (!st.payment) missing.push("payment policy");
+      return missing;
+    }
+    function ebayAccountCardHtml() {
+      const box = (inner) => `<div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3 space-y-2">${inner}</div>`;
+      if (!claudePass()) return box(`<div class="text-[11px] text-amber-300">Unlock this device to list on eBay in one tap.</div>${unlockBoxHtml("list")}`);
+      if (!ebayAcct) { loadEbayStatus().then(() => { if (!currentDraftId) renderDraftList(); }); return box(`<div class="text-[11px] text-slate-400">Checking your eBay account…</div>`); }
+      if (!ebayAcct.connected) return box(`
+        <div class="flex items-center justify-between gap-2">
+          <div class="text-[11px] text-slate-300"><b class="text-white">List on eBay in one tap.</b> Connect your eBay account once; you'll sign in on eBay's own page.${ebayAcct.error ? `<div class="text-amber-300 mt-1">${escapeHtml(ebayAcct.error)}</div>` : ""}</div>
+          <button type="button" onclick="connectEbay()" class="shrink-0 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold">Connect eBay</button>
+        </div>`);
+      const st = ebaySettings(), pol = ebayAcct.policies || {};
+      const sel = (key, label, list, fmt) => `<label class="block"><span class="text-[10px] text-slate-400">${label}</span>
+        <select onchange="saveEbaySetting('${key}', this.value)" class="w-full mt-0.5 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-[11px] text-white">
+          <option value="">Choose…</option>${(list || []).map(p => `<option value="${escapeHtml(p.id)}" ${p.id === st[key] ? "selected" : ""}>${escapeHtml(fmt ? fmt(p) : p.name)}</option>`).join("")}
+        </select></label>`;
+      const missing = ebaySetupMissing();
+      return box(`
+        <div class="flex items-center justify-between gap-2">
+          <div class="text-[11px] text-emerald-300 font-bold">✓ eBay connected${ebayAcct.username ? ` as ${escapeHtml(ebayAcct.username)}` : ""}</div>
+          <button type="button" onclick="disconnectEbay()" class="text-[10px] text-slate-400 underline">Disconnect</button>
+        </div>
+        ${ebayAcct.policiesError ? `<div class="text-[11px] text-amber-300">${escapeHtml(ebayAcct.policiesError)}</div>` : ""}
+        <details ontoggle="ebaySettingsOpen = this.open" ${missing.length || ebaySettingsOpen ? "open" : ""}>
+          <summary class="cursor-pointer select-none text-[11px] font-bold ${missing.length ? "text-amber-300" : "text-slate-300"}">${missing.length ? `Listing settings: add ${missing.join(", ")}` : "Listing settings"}</summary>
+          <div class="grid grid-cols-2 gap-2 mt-2">
+            <label class="block"><span class="text-[10px] text-slate-400">Postcode items ship from</span><input inputmode="numeric" maxlength="4" value="${escapeHtml(st.postalCode || "")}" onchange="saveEbaySetting('postalCode', this.value)" placeholder="3000" class="w-full mt-0.5 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-[11px] text-white"></label>
+            <label class="block"><span class="text-[10px] text-slate-400">Suburb, state (shown to buyers)</span><input value="${escapeHtml(st.location || "")}" onchange="saveEbaySetting('location', this.value)" placeholder="Richmond, VIC" class="w-full mt-0.5 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-[11px] text-white"></label>
+            <div class="col-span-2">${sel("shipping", "Postage policy (what buyers pay)", pol.shipping, p => `${p.name}${p.cost === 0 ? " · free" : p.cost != null ? ` · $${p.cost.toFixed(2)}` : ""}`)}</div>
+            ${sel("return", "Returns policy", pol.return)}
+            ${sel("payment", "Payment policy", pol.payment)}
+          </div>
+          <div class="text-[10px] text-slate-500 mt-1.5">These are your eBay business policies; change them on eBay under Account → Business policies.</div>
+        </details>`);
+    }
+    function descriptionHtmlFor(d) {
+      return (d.description || "").split(/\n+/).map(l => l.trim()).filter(Boolean).map(l => `<p>${escapeHtml(l)}</p>`).join("")
+        + (d.conditionNote ? `<p><b>Condition:</b> ${escapeHtml(d.conditionNote)}</p>` : "");
+    }
+    function specificsForEbay(d) {
+      const asp = aspectsMemo[d.categoryId];
+      const out = {};
+      for (const [k, v] of Object.entries(d.specifics)) {
+        const val = String(v || "").trim();
+        if (!val) continue;
+        const a = asp && asp.aspects.find(x => x.name === k);
+        out[k] = a && a.multi ? val.split(/\s*,\s*/).filter(Boolean) : [val];
+      }
+      return out;
+    }
+    // Why the List on eBay button can't run yet (empty = ready)
+    function listBlockers(d) {
+      const out = [];
+      if (!claudePass()) out.push("unlock this device");
+      else if (!ebayAcct || !ebayAcct.connected) out.push("connect your eBay account (on the drafts list)");
+      else { const m = ebaySetupMissing(); if (m.length) out.push(`add your ${m.join(", ")} (eBay settings on the drafts list)`); }
+      const notDone = draftChecks(d).filter(c => !c.ok && !/what you paid/i.test(c.text)).map(c => c.text.toLowerCase());
+      if (notDone.length) out.push(...notDone);
+      return out;
+    }
+    async function publishDraft(id, verify) {
+      const d = getDraft(id); if (!d) return;
+      await loadEbayStatus();
+      const blockers = listBlockers(d);
+      if (blockers.length) return alert(`Before listing: ${blockers.join("; ")}.`);
+      const st = ebaySettings(), pol = selectedShippingPolicy();
+      if (!verify && !confirm(`List "${d.title}" on eBay for $${num2(d.price).toFixed(2)}${pol ? ` with "${pol.name}" postage` : ""}?`)) return;
+      d.ebayErrors = null; d.ebayCheck = null;
+      try {
+        // 1. Photos to eBay's picture hosting (kept on the draft, so a retry doesn't upload them again)
+        for (const [i, p] of d.photos.entries()) {
+          if (p.ebayUrl && Date.now() - (p.ebayUrlAt || 0) < 25 * 86400000) continue;
+          draftBusy[id] = `Uploading photo ${i + 1} of ${d.photos.length} to eBay…`; renderDraftEditor();
+          const b64 = await photoBase64(p.id);
+          if (!b64) throw new Error(`Photo ${i + 1} is missing on this device. Remove it or add it again`);
+          const r = await ebayApi("/ebay/listing/photo", { method: "POST", body: JSON.stringify({ image: b64, name: `${d.title} ${i + 1}` }) });
+          if (!r.body.ok) throw Object.assign(new Error("eBay didn't accept a photo"), { ebayErrors: r.body.errors });
+          p.ebayUrl = r.body.url; p.ebayUrlAt = Date.now(); saveDrafts();
+        }
+        // 2. The listing
+        draftBusy[id] = verify ? "Checking with eBay…" : "Listing on eBay…"; renderDraftEditor();
+        const item = {
+          title: fitTitle(d.title), descriptionHtml: descriptionHtmlFor(d), categoryId: d.categoryId, price: num2(d.price),
+          conditionId: d.condition, conditionNote: d.conditionNote, specifics: specificsForEbay(d), sku: customLabel(d),
+          pictures: d.photos.map(p => p.ebayUrl).filter(Boolean), postalCode: st.postalCode, location: st.location,
+          policies: { shipping: st.shipping, return: st.return, payment: st.payment }
+        };
+        const r = await ebayApi("/ebay/listing/publish", { method: "POST", body: JSON.stringify({ verify: !!verify, item }) });
+        if (!r.body.ok) throw Object.assign(new Error("eBay didn't accept the listing"), { ebayErrors: r.body.errors || [{ message: r.body.error || "Unknown error" }] });
+        const fees = (r.body.fees || []).reduce((a, f) => a + f.amount, 0);
+        if (verify) {
+          d.ebayCheck = { at: Date.now(), fees, feeList: r.body.fees || [], warnings: (r.body.warnings || []).map(w => w.message) };
+        } else {
+          d.status = "listed"; d.ebayItemId = r.body.itemId; d.ebayUrl = r.body.url; d.listedAt = Date.now();
+          d.ebayFees = fees; d.ebayWarnings = (r.body.warnings || []).map(w => w.message);
+        }
+      } catch (e) {
+        console.warn("eBay publish failed", e);
+        d.ebayErrors = (e.ebayErrors && e.ebayErrors.length ? e.ebayErrors.map(x => x.message) : [e.message]);
+      } finally {
+        delete draftBusy[id];
+        d.updated = Date.now();
+        saveDrafts(true);
+        renderDraftEditor();
+        if (d.status === "listed" && !verify && !d.ebayErrors) {
+          const el = document.getElementById("ebayListBox");
+          if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+      }
+    }
+    function ebayListBoxHtml(d) {
+      const id = d.id;
+      if (d.status === "listed" && d.ebayUrl) return `
+        <div id="ebayListBox" class="bg-emerald-950/40 border border-emerald-700/60 rounded-xl p-3 space-y-1.5">
+          <div class="text-sm font-black text-emerald-300">✓ Listed on eBay</div>
+          <div class="text-[11px] text-slate-300">Item ${escapeHtml(d.ebayItemId || "")}${d.listedAt ? ` · ${new Date(d.listedAt).toLocaleString()}` : ""}${d.ebayFees ? ` · listing fees ${fmtMoney(d.ebayFees)}` : " · no listing fees"}</div>
+          <a href="${safeUrl(d.ebayUrl)}" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-bold"><i data-lucide="external-link" class="w-3.5 h-3.5"></i>View on eBay</a>
+          ${(d.ebayWarnings || []).length ? `<div class="text-[10px] text-slate-400">eBay notes: ${d.ebayWarnings.map(escapeHtml).join(" · ")}</div>` : ""}
+        </div>`;
+      const blockers = listBlockers(d);
+      const ready = !blockers.length;
+      return `
+        <div id="ebayListBox" class="space-y-2">
+          <button type="button" onclick="publishDraft('${id}')" ${ready && !draftBusy[id] ? "" : "disabled"} class="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white text-sm font-black flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20"><i data-lucide="send" class="w-4 h-4"></i>List on eBay${num2(d.price) ? ` for ${fmtMoney(num2(d.price))}` : ""}</button>
+          ${ready ? `<button type="button" onclick="publishDraft('${id}', true)" ${draftBusy[id] ? "disabled" : ""} class="w-full text-[11px] text-slate-300 underline">Check with eBay first (doesn't list)</button>`
+            : `<div class="text-[11px] text-amber-300">To list: ${blockers.map(escapeHtml).join("; ")}.</div>`}
+          ${d.ebayCheck ? `<div class="text-[11px] text-emerald-300 bg-emerald-950/30 border border-emerald-800/50 rounded-lg p-2">✓ eBay would accept this listing${d.ebayCheck.fees ? ` (listing fees ${fmtMoney(d.ebayCheck.fees)})` : " with no listing fees"}.${d.ebayCheck.warnings.length ? `<div class="text-slate-400 mt-1">Notes: ${d.ebayCheck.warnings.map(escapeHtml).join(" · ")}</div>` : ""}</div>` : ""}
+          ${(d.ebayErrors || []).length ? `<div class="text-[11px] text-rose-200 bg-rose-950/40 border border-rose-800/50 rounded-lg p-2"><b>eBay said:</b><ul class="list-disc ml-4 mt-1 space-y-0.5">${d.ebayErrors.map(m => `<li>${escapeHtml(m)}</li>`).join("")}</ul></div>` : ""}
+        </div>`;
+    }
+
     // ---- Modal + rendering ----
     function openListingsModal(draftId) {
       document.getElementById("listingsModal").classList.remove("hidden");
+      if (claudePass() && !ebayAcct) loadEbayStatus().then(() => { if (currentDraftId) renderDraftEditor(); else renderDraftList(); });
       if (draftId && getDraft(draftId)) { currentDraftId = draftId; renderDraftEditor(); }
       else showDraftList();
     }
@@ -4368,6 +4600,7 @@ Give values for these eBay item specifics where the photos, or general knowledge
           <button type="button" onclick="startDraftBarcodeScan()" class="py-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white text-[11px] font-bold flex flex-col items-center gap-1"><i data-lucide="scan-barcode" class="w-5 h-5"></i>Scan barcode</button>
           <button type="button" onclick="newBlankDraft()" class="py-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white text-[11px] font-bold flex flex-col items-center gap-1"><i data-lucide="pencil" class="w-5 h-5"></i>Type it</button>
         </div>
+        <div class="mt-3">${ebayAccountCardHtml()}</div>
         <p class="text-[10px] text-slate-500 mt-2">Bought something from the Bulk evaluator? Tap <span class="text-emerald-300 font-bold">Bought it · draft listing</span> on its card and the price, cost and comps come with it.</p>
         <div class="mt-4 space-y-2">
           ${active.length ? `<div class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Drafts (${active.length})</div>${active.map(row).join("")}` : `<div class="text-center text-xs text-slate-500 py-6 border border-dashed border-slate-800 rounded-xl">No drafts yet.</div>`}
@@ -4497,12 +4730,16 @@ Give values for these eBay item specifics where the photos, or general knowledge
       const finish = section(4, "Listing check", `
         <div id="draftChecks" class="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1"></div>
         <div class="text-[10px] text-slate-500">Custom label (goes on eBay as the SKU): <span id="draftSku" class="text-slate-300 font-mono"></span></div>
-        <div class="grid grid-cols-2 gap-2 pt-1">
-          <button type="button" onclick="copyDraftField('${id}','all',this)" class="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-1.5"><i data-lucide="copy" class="w-3.5 h-3.5"></i>Copy all</button>
+        ${ebayListBoxHtml(d)}
+        <details class="pt-1" ${d.status === "listed" ? "" : ""}>
+        <summary class="cursor-pointer select-none text-[11px] text-slate-400 font-bold">Or list it yourself (copy and paste)</summary>
+        <div class="grid grid-cols-2 gap-2 pt-2">
+          <button type="button" onclick="copyDraftField('${id}','all',this)" class="py-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"><i data-lucide="copy" class="w-3.5 h-3.5"></i>Copy all</button>
           <a href="https://www.ebay.com.au/sl/sell" target="_blank" rel="noopener" onclick="copyDraftField('${id}','title')" class="py-2.5 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-white text-xs font-bold flex items-center justify-center gap-1.5"><i data-lucide="external-link" class="w-3.5 h-3.5"></i>Open eBay sell form</a>
           <button type="button" onclick="copyDraftField('${id}','title',this)" class="py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 text-[11px] font-bold">Copy title</button>
           <button type="button" onclick="copyDraftField('${id}','specifics',this)" class="py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 text-[11px] font-bold">Copy item specifics</button>
         </div>
+        </details>
         <div class="flex items-center justify-between pt-1">
           ${d.status === "listed" ? smallBtn("Move back to drafts", `setDraftStatus('${id}','draft')`) : smallBtn("✓ Mark as listed on eBay", `setDraftStatus('${id}','listed')`, "text-blue-200 bg-blue-950/40 border-blue-800/50")}
           ${smallBtn('<i data-lucide="trash-2" class="w-3 h-3 inline"></i> Delete draft', `deleteDraft('${id}')`, "text-rose-300 bg-slate-900 border-rose-900/50")}

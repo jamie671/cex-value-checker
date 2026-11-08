@@ -12,13 +12,21 @@
     { "name": "CLAUDE_LIMIT", "namespace_id": "2610265", "simple": { "limit": 20, "period": 60 } }
   ],
   // Daily Claude cap: one counter object, created automatically on deploy (SQLite-backed Durable Object).
+  // OWNER_STORE: the owner's eBay sign-in (tokens) for one-tap listing.
   "durable_objects": {
-    "bindings": [{ "name": "CLAUDE_USAGE", "class_name": "UsageCounter" }]
+    "bindings": [
+      { "name": "CLAUDE_USAGE", "class_name": "UsageCounter" },
+      { "name": "OWNER_STORE", "class_name": "OwnerStore" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UsageCounter"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["UsageCounter"] },
+    { "tag": "v2", "new_sqlite_classes": ["OwnerStore"] }
+  ],
   "vars": {
     // Most Claude reads per day (resets at midnight AEST). Roughly 10c each on Opus.
     "CLAUDE_DAILY_CAP": "200"
   }
-  // Secrets (set with `npx wrangler secret put`): EBAY_APP_ID, EBAY_CERT_ID, ANTHROPIC_API_KEY, APP_PASS
+  // Secrets (set with `npx wrangler secret put`): EBAY_APP_ID, EBAY_CERT_ID, ANTHROPIC_API_KEY, APP_PASS,
+  // EBAY_RUNAME (the eBay redirect URL name for <worker>/ebay/auth/callback)
 }
